@@ -1,6 +1,6 @@
 """Giao diện + logic thuần của dashboard (không phụ thuộc aiohttp/discord → dễ test).
 
-Giao diện: Liquid Glass (iOS), thanh menu dọc bên trái, tối ưu điện thoại.
+Giao diện: Kính mờ (frosted glass) thuần CSS, thanh menu dọc bên trái, tối ưu điện thoại.
 Không dùng JavaScript và không tải tài nguyên bên ngoài → không mở thêm bề mặt tấn công.
 """
 
@@ -14,10 +14,11 @@ from utils import format_bytes, format_uptime
 
 CSS = """
 :root{color-scheme:dark;--bg:#0a0e1c;--fg:#f3f5fa;--mut:rgba(243,245,250,.62);
---g1:rgba(255,255,255,.16);--g2:rgba(255,255,255,.06);--line:rgba(255,255,255,.2);--hi:rgba(255,255,255,.38);
---acc:#7b8cff;--acc2:#b06bff;--bad:#ff5a64;--ok:#2fd3a0;--sh:0 10px 34px rgba(0,0,0,.38);--side:252px}
+--g1:rgba(255,255,255,.20);--g2:rgba(255,255,255,.10);--line:rgba(255,255,255,.22);--hi:rgba(255,255,255,.42);
+--acc:#7b8cff;--acc2:#b06bff;--bad:#ff5a64;--ok:#2fd3a0;--sh:0 10px 34px rgba(0,0,0,.38);--side:252px;
+--blur:44px;--sat:200%}
 @media(prefers-color-scheme:light){:root{color-scheme:light;--bg:#e8ecf8;--fg:#141824;--mut:rgba(20,24,36,.6);
---g1:rgba(255,255,255,.78);--g2:rgba(255,255,255,.46);--line:rgba(255,255,255,.85);--hi:#fff;--sh:0 10px 34px rgba(50,60,110,.16)}}
+--g1:rgba(255,255,255,.82);--g2:rgba(255,255,255,.52);--line:rgba(255,255,255,.88);--hi:#fff;--sh:0 10px 34px rgba(50,60,110,.16)}}
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 html{scroll-padding-top:5rem}
 body{margin:0;min-height:100vh;min-height:100dvh;background:var(--bg);color:var(--fg);overflow-x:hidden;white-space:nowrap;
@@ -30,7 +31,7 @@ radial-gradient(60vmax 60vmax at 35% 112%,rgba(34,211,238,.38),transparent 62%)}
 a{color:inherit}code{font:.88em ui-monospace,SFMono-Regular,Menlo,monospace}
 
 .glass,.card,.wrap,pre,.flash,.side,.top,details{background:linear-gradient(135deg,var(--g1),var(--g2));
--webkit-backdrop-filter:blur(26px) saturate(190%);backdrop-filter:blur(26px) saturate(190%);
+-webkit-backdrop-filter:blur(var(--blur)) saturate(var(--sat));backdrop-filter:blur(var(--blur)) saturate(var(--sat));
 border:1px solid var(--line);box-shadow:var(--sh),inset 0 1px 0 var(--hi),inset 0 -1px 0 rgba(255,255,255,.06)}
 
 #nt{position:absolute;opacity:0;pointer-events:none}
@@ -75,7 +76,7 @@ th{font-size:.8rem;color:var(--mut);font-weight:600}tr:last-child td{border-bott
 tr:hover td{background:rgba(255,255,255,.05)}
 
 input,select,button{font:inherit;font-size:16px;padding:.6rem .95rem;border-radius:999px;border:1px solid var(--line);
-background:var(--g2);color:inherit;outline:0;-webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px)}
+background:var(--g2);color:inherit;outline:0;-webkit-backdrop-filter:blur(20px) saturate(180%);backdrop-filter:blur(20px) saturate(180%)}
 input::placeholder{color:var(--mut)}
 input:focus-visible,select:focus-visible,button:focus-visible,a:focus-visible,.burger:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
 input[type=checkbox]{width:1.1rem;height:1.1rem;padding:0;vertical-align:middle;accent-color:var(--acc)}
@@ -95,18 +96,18 @@ details pre{background:none;border:0;box-shadow:none;-webkit-backdrop-filter:non
 .muted{color:var(--mut)}
 
 .login{max-width:380px;margin:14vh auto 0;padding:1.6rem;border-radius:30px;
-background:linear-gradient(135deg,var(--g1),var(--g2));-webkit-backdrop-filter:blur(30px) saturate(190%);backdrop-filter:blur(30px) saturate(190%);
+background:linear-gradient(135deg,var(--g1),var(--g2));-webkit-backdrop-filter:blur(48px) saturate(200%);backdrop-filter:blur(48px) saturate(200%);
 border:1px solid var(--line);box-shadow:var(--sh),inset 0 1px 0 var(--hi)}
 .login h1{display:flex;align-items:center;gap:12px;font-size:1.35rem}
 .login form.row{flex-wrap:nowrap}.login input{flex:1;min-width:0}
 .wrapper{padding:0 16px}
 
 @media(max-width:880px){
-:root{--side:min(80vw,300px)}
+:root{--side:min(80vw,300px);--blur:32px}
 .top{display:flex}
 .side{transform:translateX(-105%);width:var(--side)}
 #nt:checked~.side{transform:none}
-#nt:checked~.scrim{display:block;position:fixed;inset:0;z-index:35;background:rgba(0,0,0,.4);-webkit-backdrop-filter:blur(3px);backdrop-filter:blur(3px)}
+#nt:checked~.scrim{display:block;position:fixed;inset:0;z-index:35;background:rgba(0,0,0,.4);-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px)}
 main{margin-left:0;padding:calc(76px + env(safe-area-inset-top)) max(14px,env(safe-area-inset-right)) 32px max(14px,env(safe-area-inset-left))}
 h1{font-size:1.4rem}
 .cards{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
@@ -114,7 +115,7 @@ h1{font-size:1.4rem}
 }
 @media(prefers-reduced-motion:reduce){*{transition:none!important}}
 @supports not ((backdrop-filter:blur(1px)) or (-webkit-backdrop-filter:blur(1px))){
-.glass,.card,.wrap,pre,.flash,.side,.top,details,.login{background:rgba(30,34,52,.92)}}
+.glass,.card,.wrap,pre,.flash,.side,.top,details,.login{background:rgba(30,34,52,.96)}}
 """
 
 NAV = [

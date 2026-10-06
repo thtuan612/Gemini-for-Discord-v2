@@ -1,7 +1,7 @@
 """Giao diện + logic thuần của dashboard (không phụ thuộc aiohttp/discord → dễ test).
 
-Giao diện theo phong cách iOS: large title, nhóm danh sách bo góc, thanh điều hướng kính mờ,
-tab bar dưới cùng trên điện thoại, tự đổi sáng/tối theo hệ thống.
+Giao diện: Liquid Glass (iOS), thanh menu dọc bên trái, tối ưu điện thoại.
+Không dùng JavaScript và không tải tài nguyên bên ngoài → không mở thêm bề mặt tấn công.
 """
 
 from __future__ import annotations
@@ -13,101 +13,108 @@ import time
 from utils import format_bytes, format_uptime
 
 CSS = """
-:root{--bg:#f2f2f7;--fg:#000;--card:rgba(255,255,255,.74);--line:rgba(60,60,67,.16);--fill:rgba(118,118,128,.12);
---fill2:rgba(0,122,255,.14);--sub:rgba(60,60,67,.62);--acc:#007aff;--bad:#ff3b30;--ok:#34c759;
---glass:rgba(250,250,252,.62);--glassline:rgba(255,255,255,.65);--shadow:0 8px 30px rgba(0,0,0,.12);
---bgimg:radial-gradient(60% 38% at 12% 0%,rgba(0,122,255,.26),transparent),
-radial-gradient(50% 34% at 100% 18%,rgba(175,82,222,.20),transparent),
-radial-gradient(70% 40% at 55% 100%,rgba(52,199,89,.16),transparent);
---sat:env(safe-area-inset-top,0px);--sab:env(safe-area-inset-bottom,0px)}
-@media(prefers-color-scheme:dark){:root{--bg:#000;--fg:#fff;--card:rgba(44,44,46,.66);--line:rgba(84,84,88,.5);
---fill:rgba(118,118,128,.28);--fill2:rgba(10,132,255,.28);--sub:rgba(235,235,245,.6);--acc:#0a84ff;--bad:#ff453a;
---ok:#30d158;--glass:rgba(40,40,44,.55);--glassline:rgba(255,255,255,.14);--shadow:0 8px 30px rgba(0,0,0,.5);
---bgimg:radial-gradient(60% 38% at 12% 0%,rgba(10,132,255,.38),transparent),
-radial-gradient(50% 34% at 100% 18%,rgba(191,90,242,.30),transparent),
-radial-gradient(70% 40% at 55% 100%,rgba(48,209,88,.20),transparent)}}
+:root{color-scheme:dark;--bg:#0a0e1c;--fg:#f3f5fa;--mut:rgba(243,245,250,.62);
+--g1:rgba(255,255,255,.16);--g2:rgba(255,255,255,.06);--line:rgba(255,255,255,.2);--hi:rgba(255,255,255,.38);
+--acc:#7b8cff;--acc2:#b06bff;--bad:#ff5a64;--ok:#2fd3a0;--sh:0 10px 34px rgba(0,0,0,.38);--side:252px}
+@media(prefers-color-scheme:light){:root{color-scheme:light;--bg:#e8ecf8;--fg:#141824;--mut:rgba(20,24,36,.6);
+--g1:rgba(255,255,255,.78);--g2:rgba(255,255,255,.46);--line:rgba(255,255,255,.85);--hi:#fff;--sh:0 10px 34px rgba(50,60,110,.16)}}
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
-html{-webkit-text-size-adjust:100%;background:var(--bg)}
-body{margin:0;background:transparent;color:var(--fg);min-height:100vh;
-font:17px/1.4 -apple-system,BlinkMacSystemFont,"SF Pro Text","SF Pro Display","Segoe UI",Roboto,"Helvetica Neue",sans-serif;
--webkit-font-smoothing:antialiased}
-.bg{position:fixed;inset:0;z-index:-1;background:var(--bgimg),var(--bg)}
-.page{max-width:980px;margin:0 auto;padding:calc(10px + var(--sat)) 16px calc(130px + var(--sab))}
-.top{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:44px}
-.brand{font-weight:600;font-size:17px;display:flex;align-items:center;gap:8px;white-space:nowrap}
-.dot{width:9px;height:9px;border-radius:50%;background:var(--ok);box-shadow:0 0 0 4px color-mix(in srgb,var(--ok) 25%,transparent)}
-h1{font-size:34px;line-height:1.12;font-weight:700;letter-spacing:-.025em;margin:14px 2px 16px}
-h2{font-size:13px;font-weight:500;color:var(--sub);text-transform:uppercase;letter-spacing:.03em;margin:28px 14px 8px}
-p{margin:.5rem 2px}a{color:var(--acc);text-decoration:none}
-code{font:13px ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--fill);padding:2px 6px;border-radius:6px;overflow-wrap:anywhere}
-.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px}
-.card,.wrap,form.row,details,pre{background:var(--card);border:.5px solid var(--glassline);border-radius:22px;
--webkit-backdrop-filter:blur(18px) saturate(160%);backdrop-filter:blur(18px) saturate(160%)}
-.card{padding:14px 16px;min-width:0}
-.card b{display:block;font-size:22px;font-weight:600;letter-spacing:-.015em;line-height:1.2;overflow-wrap:break-word;text-wrap:balance}
-.card span{display:block;margin-top:2px;color:var(--sub);font-size:13px}
-.wrap{overflow-x:auto;-webkit-overflow-scrolling:touch}
-table{border-collapse:collapse;width:100%;font-size:15px}
-th,td{padding:12px 16px;text-align:left;border-bottom:.5px solid var(--line);vertical-align:middle}
-th{font-size:12.5px;font-weight:500;color:var(--sub);white-space:nowrap}
-tr:last-child td{border-bottom:0}
-td{overflow-wrap:anywhere}
-input,select,button{font:inherit;font-size:16px;border-radius:12px;border:0;padding:10px 14px;outline:0;min-height:42px}
-input,select{background:var(--fill);color:inherit;min-width:0;max-width:100%}
-input:focus,select:focus{box-shadow:0 0 0 3px color-mix(in srgb,var(--acc) 40%,transparent)}
-input[type=checkbox]{width:24px;height:24px;min-height:0;accent-color:var(--acc);vertical-align:middle;margin-right:8px}
-button{background:var(--acc);color:#fff;font-weight:600;cursor:pointer;transition:opacity .15s,transform .12s;white-space:nowrap;border-radius:999px;padding:10px 20px}
-button:hover{opacity:.9}button:active{opacity:.65;transform:scale(.96)}
-button.bad{background:color-mix(in srgb,var(--bad) 16%,transparent);color:var(--bad)}
-button.ghost{background:var(--fill);color:var(--acc);padding:8px 16px;min-height:36px;font-size:15px}
-form.inline{display:inline}
-form.row{display:flex;flex-wrap:wrap;gap:10px;align-items:center;padding:12px 14px;margin:0 0 10px}
-label{overflow-wrap:anywhere}
-.flash{background:var(--ok);color:#fff;padding:12px 16px;border-radius:18px;margin:10px 0 0;font-weight:500;
-box-shadow:var(--shadow)}.err{background:var(--bad)}
-pre{padding:14px 16px;overflow:auto;font:12px/1.55 ui-monospace,Menlo,monospace;max-height:70vh;margin:8px 0;
-white-space:pre-wrap;overflow-wrap:anywhere}
-details{padding:12px 16px}summary{cursor:pointer;color:var(--acc);font-weight:500}
-.muted{color:var(--sub)}
-.login{max-width:380px;margin:16vh auto 0;padding:16px;text-align:center}
-.login h1{font-size:28px;margin-bottom:22px;text-align:center}
-.login form.row{flex-direction:column;align-items:stretch;padding:16px;gap:12px}
-.login input,.login button{width:100%;padding:13px 16px}
-#lg-root{position:fixed;inset:0;z-index:30;pointer-events:none;overflow:visible}
-.lg-bg{position:absolute;inset:0;background:var(--bgimg),var(--bg)}
-.glass{position:absolute;pointer-events:auto;left:0;right:0;margin:0 auto;width:max-content;max-width:calc(100% - 24px);
-display:flex;gap:2px;padding:6px;border-radius:32px;background:var(--glass);border:.5px solid var(--glassline);
--webkit-backdrop-filter:blur(26px) saturate(190%);backdrop-filter:blur(26px) saturate(190%);box-shadow:var(--shadow)}
-.lg-on .glass{background:none;border-color:transparent;box-shadow:none;-webkit-backdrop-filter:none;backdrop-filter:none}
-.glass a{position:relative;display:flex;align-items:center;gap:8px;padding:9px 16px;border-radius:26px;color:var(--sub);
-font-size:15px;font-weight:500;white-space:nowrap;transition:background .25s,color .25s}
-.glass a i{font-style:normal;font-size:18px;line-height:1}
-.glass a.on{background:var(--fill2);color:var(--acc)}
-.glass{top:calc(10px + var(--sat))}
-@media(min-width:761px){.page{padding-top:calc(78px + var(--sat));padding-bottom:60px}.top{position:absolute;left:0;right:0;top:calc(18px + var(--sat));padding:0 16px;max-width:980px;margin:0 auto}}
-@media(max-width:760px){
-.page{padding-left:14px;padding-right:14px}
-.glass{top:auto;bottom:calc(10px + var(--sab));left:10px;right:10px;width:auto;max-width:none;justify-content:space-between}
-.glass a{flex:1 1 0;min-width:0;flex-direction:column;gap:2px;padding:7px 2px;font-size:10.5px;justify-content:center;border-radius:24px}
-.glass a i{font-size:21px}
-h1{font-size:31px}
+html{scroll-padding-top:5rem}
+body{margin:0;min-height:100vh;min-height:100dvh;background:var(--bg);color:var(--fg);overflow-x:hidden;white-space:nowrap;
+font:15px/1.5 -apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Roboto,system-ui,sans-serif;-webkit-font-smoothing:antialiased}
+body::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;
+background:radial-gradient(55vmax 55vmax at 8% -5%,rgba(91,107,255,.55),transparent 62%),
+radial-gradient(48vmax 48vmax at 105% 18%,rgba(255,106,213,.42),transparent 62%),
+radial-gradient(60vmax 60vmax at 35% 112%,rgba(34,211,238,.38),transparent 62%)}
+@media(prefers-color-scheme:light){body::before{opacity:.7}}
+a{color:inherit}code{font:.88em ui-monospace,SFMono-Regular,Menlo,monospace}
+
+.glass,.card,.wrap,pre,.flash,.side,.top,details{background:linear-gradient(135deg,var(--g1),var(--g2));
+-webkit-backdrop-filter:blur(26px) saturate(190%);backdrop-filter:blur(26px) saturate(190%);
+border:1px solid var(--line);box-shadow:var(--sh),inset 0 1px 0 var(--hi),inset 0 -1px 0 rgba(255,255,255,.06)}
+
+#nt{position:absolute;opacity:0;pointer-events:none}
+.side{position:fixed;top:0;bottom:0;left:0;width:var(--side);z-index:40;display:flex;flex-direction:column;
+padding:max(18px,env(safe-area-inset-top)) 12px max(18px,env(safe-area-inset-bottom)) max(12px,env(safe-area-inset-left));
+border-radius:0 28px 28px 0;overflow-y:auto;transition:transform .32s cubic-bezier(.32,.72,0,1)}
+.brand{display:flex;align-items:center;gap:12px;padding:6px 10px 20px;font-weight:700;font-size:1.05rem}
+.logo{width:38px;height:38px;border-radius:12px;display:grid;place-items:center;font-size:1.2rem;flex:none;
+background:linear-gradient(135deg,var(--acc),var(--acc2));box-shadow:inset 0 1px 0 rgba(255,255,255,.5),0 6px 16px rgba(123,140,255,.45)}
+.side nav{display:flex;flex-direction:column;gap:4px}
+.side nav a{display:flex;align-items:center;gap:12px;padding:12px 14px;border-radius:16px;text-decoration:none;
+color:var(--mut);font-weight:500;transition:background .2s,color .2s}
+.side nav a:hover{background:rgba(255,255,255,.1);color:var(--fg)}
+.side nav a.on{color:var(--fg);background:linear-gradient(135deg,rgba(123,140,255,.55),rgba(176,107,255,.38));
+box-shadow:inset 0 1px 0 rgba(255,255,255,.45),0 6px 18px rgba(123,140,255,.3)}
+.side svg{width:20px;height:20px;flex:none;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.side form.out{margin-top:auto;padding-top:16px}.side form.out button{width:100%}
+
+.top{display:none;position:fixed;z-index:30;left:max(10px,env(safe-area-inset-left));right:max(10px,env(safe-area-inset-right));
+top:max(10px,env(safe-area-inset-top));height:52px;border-radius:26px;align-items:center;gap:12px;padding:0 8px}
+.burger{width:38px;height:38px;border-radius:50%;display:grid;place-items:center;cursor:pointer;flex:none;background:rgba(255,255,255,.12)}
+.burger i,.burger i::before,.burger i::after{display:block;width:16px;height:2px;border-radius:2px;background:currentColor;position:relative;content:""}
+.burger i::before{position:absolute;top:-5px}.burger i::after{position:absolute;top:5px}
+.top b{overflow:hidden;text-overflow:ellipsis;font-size:1rem}
+.scrim{display:none}
+
+main{margin-left:var(--side);padding:max(28px,env(safe-area-inset-top)) 28px 40px;min-width:0}
+main>*{max-width:1120px}
+h1{font-size:1.7rem;letter-spacing:-.02em;margin:.1rem 0 1.2rem;overflow:hidden;text-overflow:ellipsis}
+h2{font-size:1.05rem;margin:1.8rem 0 .7rem;color:var(--mut);font-weight:600}
+main p{overflow-x:auto;scrollbar-width:none}main p::-webkit-scrollbar{display:none}
+
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(168px,1fr));gap:12px}
+.card{border-radius:22px;padding:14px 16px;min-width:0}
+.card b{display:block;font-size:1.2rem;font-weight:650;overflow:hidden;text-overflow:ellipsis}
+.card span{display:block;color:var(--mut);font-size:.84rem;overflow:hidden;text-overflow:ellipsis}
+
+.wrap{overflow-x:auto;-webkit-overflow-scrolling:touch;border-radius:22px}
+table{border-collapse:collapse;width:100%}
+th,td{padding:.7rem 1rem;text-align:left;border-bottom:1px solid var(--line);vertical-align:middle}
+th{font-size:.8rem;color:var(--mut);font-weight:600}tr:last-child td{border-bottom:0}
+tr:hover td{background:rgba(255,255,255,.05)}
+
+input,select,button{font:inherit;font-size:16px;padding:.6rem .95rem;border-radius:999px;border:1px solid var(--line);
+background:var(--g2);color:inherit;outline:0;-webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px)}
+input::placeholder{color:var(--mut)}
+input:focus-visible,select:focus-visible,button:focus-visible,a:focus-visible,.burger:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
+input[type=checkbox]{width:1.1rem;height:1.1rem;padding:0;vertical-align:middle;accent-color:var(--acc)}
+button{border:0;cursor:pointer;color:#fff;font-weight:600;background:linear-gradient(135deg,var(--acc),var(--acc2));
+box-shadow:inset 0 1px 0 rgba(255,255,255,.45),0 6px 16px rgba(123,140,255,.35);transition:transform .15s,filter .2s}
+button:active{transform:scale(.96)}button:hover{filter:brightness(1.08)}
+button.bad{background:linear-gradient(135deg,#ff6b73,#e8343f);box-shadow:inset 0 1px 0 rgba(255,255,255,.4),0 6px 16px rgba(255,90,100,.35)}
+button.ghost{background:var(--g2);color:inherit;box-shadow:inset 0 1px 0 var(--hi)}
+form.inline{display:inline}form.row{display:flex;flex-wrap:wrap;gap:.6rem;align-items:center;margin:.5rem 0}
+td form.inline button{padding:.35rem .85rem;font-size:14px}
+
+.flash{border-radius:18px;padding:.75rem 1.1rem;margin-bottom:1.1rem;border-left:4px solid var(--ok);overflow-x:auto}
+.err{border-left-color:var(--bad)}
+pre{border-radius:22px;padding:1rem 1.2rem;overflow:auto;font-size:.8rem;max-height:70vh;white-space:pre;margin:.5rem 0}
+details{border-radius:22px;padding:.8rem 1.1rem}summary{cursor:pointer;font-weight:600}
+details pre{background:none;border:0;box-shadow:none;-webkit-backdrop-filter:none;backdrop-filter:none;padding:.8rem 0 0}
+.muted{color:var(--mut)}
+
+.login{max-width:380px;margin:14vh auto 0;padding:1.6rem;border-radius:30px;
+background:linear-gradient(135deg,var(--g1),var(--g2));-webkit-backdrop-filter:blur(30px) saturate(190%);backdrop-filter:blur(30px) saturate(190%);
+border:1px solid var(--line);box-shadow:var(--sh),inset 0 1px 0 var(--hi)}
+.login h1{display:flex;align-items:center;gap:12px;font-size:1.35rem}
+.login form.row{flex-wrap:nowrap}.login input{flex:1;min-width:0}
+.wrapper{padding:0 16px}
+
+@media(max-width:880px){
+:root{--side:min(80vw,300px)}
+.top{display:flex}
+.side{transform:translateX(-105%);width:var(--side)}
+#nt:checked~.side{transform:none}
+#nt:checked~.scrim{display:block;position:fixed;inset:0;z-index:35;background:rgba(0,0,0,.4);-webkit-backdrop-filter:blur(3px);backdrop-filter:blur(3px)}
+main{margin-left:0;padding:calc(76px + env(safe-area-inset-top)) max(14px,env(safe-area-inset-right)) 32px max(14px,env(safe-area-inset-left))}
+h1{font-size:1.4rem}
 .cards{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
-.card.wide{grid-column:1/-1}
-.card b{font-size:20px}
-.wrap{background:none;border:0;border-radius:0;overflow:visible;-webkit-backdrop-filter:none;backdrop-filter:none}
-table,tbody,tr,td{display:block;width:100%}
-tr.h{display:none}
-tr{background:var(--card);border:.5px solid var(--glassline);border-radius:22px;padding:4px 16px;margin:0 0 10px;
--webkit-backdrop-filter:blur(18px) saturate(160%);backdrop-filter:blur(18px) saturate(160%)}
-td{display:flex;justify-content:space-between;align-items:baseline;gap:16px;padding:9px 0;text-align:right;
-border-bottom:.5px solid var(--line);font-size:15px}
-td::before{content:attr(data-label);flex:none;color:var(--sub);font-size:13px;text-align:left}
-td[data-label=""]{justify-content:flex-end}td[data-label=""]::before{display:none}
-form.row>*{flex:1 1 100%}form.row>input[type=hidden]{display:none}
-form.row>button{width:100%}form.row label{display:flex;align-items:center;gap:8px}
-form.row label input[type=number]{flex:1;width:auto!important}
+.card{padding:12px 14px}.card b{font-size:1.05rem}
 }
 @media(prefers-reduced-motion:reduce){*{transition:none!important}}
+@supports not ((backdrop-filter:blur(1px)) or (-webkit-backdrop-filter:blur(1px))){
+.glass,.card,.wrap,pre,.flash,.side,.top,details,.login{background:rgba(30,34,52,.92)}}
 """
 
 NAV = [
@@ -119,33 +126,17 @@ NAV = [
     ("/settings", "Cấu hình"),
 ]
 
-ICONS = {
-    "/": "📊",
-    "/autochat": "💬",
-    "/reminders": "⏰",
-    "/history": "🗂️",
-    "/logs": "📜",
-    "/settings": "⚙️",
+_ICONS = {
+    "/": '<rect x="3" y="3" width="7" height="7" rx="2"/><rect x="14" y="3" width="7" height="7" rx="2"/>'
+         '<rect x="3" y="14" width="7" height="7" rx="2"/><rect x="14" y="14" width="7" height="7" rx="2"/>',
+    "/autochat": '<path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z"/>',
+    "/reminders": '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+    "/history": '<path d="M4 6c0-1.7 3.6-3 8-3s8 1.3 8 3-3.6 3-8 3-8-1.3-8-3zM4 6v6c0 1.7 3.6 3 8 3s8-1.3 8-3V6'
+                'M4 12v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/>',
+    "/logs": '<path d="M5 4h14v16H5zM9 9h6M9 13h6M9 17h3"/>',
+    "/settings": '<path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0"/><circle cx="16" cy="6" r="2"/>'
+                 '<circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/>',
 }
-
-
-LG_JS = """<script type="module">
-const root=document.getElementById('lg-root');
-try{
-const gl=document.createElement('canvas');
-if(!(gl.getContext('webgl')||gl.getContext('experimental-webgl')))throw 0;
-if(matchMedia('(prefers-reduced-motion: reduce)').matches||/[?&]lg=0/.test(location.search))throw 0;
-const {LiquidGlass}=await import('https://cdn.jsdelivr.net/npm/@ybouane/liquidglass/dist/index.js');
-const inst=await LiquidGlass.init({root,glassElements:[root.querySelector('.glass')]});
-root.classList.add('lg-on');
-addEventListener('pagehide',()=>inst.destroy());
-}catch(e){/* giữ giao diện kính CSS dự phòng */}
-</script>"""
-
-LG_CFG = (
-    '{"cornerRadius":32,"zRadius":22,"blurAmount":0.3,"refraction":0.55,"chromAberration":0.03,'
-    '"edgeHighlight":0.08,"specular":0.25,"shadowOpacity":0.18,"shadowSpread":14,"shadowOffsetY":6}'
-)
 
 
 def esc(value) -> str:
@@ -156,28 +147,29 @@ def _doc(title: str, inner: str) -> str:
     return (
         '<!doctype html><html lang="vi"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">'
-        '<meta name="color-scheme" content="light dark">'
-        '<meta name="theme-color" content="#f2f2f7" media="(prefers-color-scheme: light)">'
-        '<meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">'
+        '<meta name="theme-color" content="#0a0e1c"><meta name="color-scheme" content="dark light">'
         f"<title>{esc(title)} · Gemini Dashboard</title><style>{CSS}</style></head>"
-        f'<body><div class="bg"></div>{inner}</body></html>'
+        f"<body>{inner}</body></html>"
     )
 
 
 def layout(*, title: str, body: str, csrf: str, active: str, msg: str = "") -> str:
     nav = "".join(
-        f'<a href="{h}"{" class=on" if h == active else ""}><i>{ICONS.get(h, "•")}</i><span>{esc(label)}</span></a>'
+        f'<a href="{h}"{" class=on" if h == active else ""}>'
+        f'<svg viewBox="0 0 24 24" aria-hidden="true">{_ICONS.get(h, "")}</svg>{esc(label)}</a>'
         for h, label in NAV
     )
     flash = f'<div class="flash">{esc(msg)}</div>' if msg else ""
     inner = (
-        '<div class="page"><div class="top"><div class="brand"><span class="dot"></span>Gemini</div>'
-        f'<form class="inline" method="post" action="/logout">'
-        f'<input type="hidden" name="csrf" value="{esc(csrf)}"><button class="ghost">Đăng xuất</button></form></div>'
-        f"{flash}<h1>{esc(title)}</h1>{body}</div>"
-        f'<div id="lg-root"><div class="lg-bg"></div>'
-        f"<nav class=\"glass\" data-config='{LG_CFG}'>{nav}</nav></div>"
-        + LG_JS
+        '<input type="checkbox" id="nt" aria-hidden="true">'
+        '<label class="scrim" for="nt"></label>'
+        f'<aside class="side"><div class="brand"><span class="logo">🤖</span>Gemini Dashboard</div>'
+        f"<nav>{nav}</nav>"
+        f'<form class="out" method="post" action="/logout">'
+        f'<input type="hidden" name="csrf" value="{esc(csrf)}"><button class="ghost">Đăng xuất</button></form></aside>'
+        f'<header class="top"><label class="burger" for="nt" tabindex="0" aria-label="Mở menu"><i></i></label>'
+        f"<b>{esc(title)}</b></header>"
+        f"<main>{flash}<h1>{esc(title)}</h1>{body}</main>"
     )
     return _doc(title, inner)
 
@@ -185,10 +177,10 @@ def layout(*, title: str, body: str, csrf: str, active: str, msg: str = "") -> s
 def login_page(error: str = "") -> str:
     err = f'<div class="flash err">{esc(error)}</div>' if error else ""
     inner = (
-        '<div class="login"><h1>🤖 Gemini Dashboard</h1>' + err +
+        '<div class="wrapper"><div class="login"><h1><span class="logo">🤖</span>Gemini Dashboard</h1>' + err +
         '<form method="post" action="/login" class="row">'
         '<input type="password" name="password" placeholder="Mật khẩu" autocomplete="current-password" '
-        'required autofocus><button>Đăng nhập</button></form></div>'
+        'required autofocus><button>Đăng nhập</button></form></div></div>'
     )
     return _doc("Đăng nhập", inner)
 
@@ -198,13 +190,8 @@ def table(headers: list[str], rows: list[list[str]], empty: str = "Không có d�
     if not rows:
         return f'<p class="muted">{esc(empty)}</p>'
     head = "".join(f"<th>{esc(h)}</th>" for h in headers)
-    body = "".join(
-        "<tr>" + "".join(
-            f'<td data-label="{esc(headers[i] if i < len(headers) else "")}">{c}</td>' for i, c in enumerate(r)
-        ) + "</tr>"
-        for r in rows
-    )
-    return f'<div class="wrap"><table><tr class="h">{head}</tr>{body}</table></div>'
+    body = "".join("<tr>" + "".join(f"<td>{c}</td>" for c in r) + "</tr>" for r in rows)
+    return f'<div class="wrap"><table><tr>{head}</tr>{body}</table></div>'
 
 
 def post_form(action: str, csrf: str, fields: str, button: str, *, inline=False, bad=False) -> str:
@@ -236,10 +223,7 @@ def overview_body(stats: dict, guilds: list[dict]) -> str:
         ("Model", stats["model"]),
         ("Python / discord.py", f"{stats['python']} / {stats['dpy']}"),
     ]
-    html_cards = "".join(
-        f'<div class="card{" wide" if len(str(v)) > 12 else ""}"><b>{esc(v)}</b><span>{esc(k)}</span></div>'
-        for k, v in cards
-    )
+    html_cards = "".join(f'<div class="card"><b>{esc(v)}</b><span>{esc(k)}</span></div>' for k, v in cards)
     rows = [
         [esc(g["name"]), esc(g["id"]), esc(g["members"]), esc(g["autochat"]), esc(g["reminders"])]
         for g in guilds

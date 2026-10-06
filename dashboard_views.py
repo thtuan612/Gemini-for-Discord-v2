@@ -13,77 +13,99 @@ import time
 from utils import format_bytes, format_uptime
 
 CSS = """
-:root{--bg:#f2f2f7;--fg:#000;--card:#fff;--line:rgba(60,60,67,.18);--fill:rgba(118,118,128,.12);
---sub:rgba(60,60,67,.6);--acc:#007aff;--bad:#ff3b30;--ok:#34c759;--glass:rgba(249,249,249,.78);
---r:14px;--sat:env(safe-area-inset-top,0px);--sab:env(safe-area-inset-bottom,0px)}
-@media(prefers-color-scheme:dark){:root{--bg:#000;--fg:#fff;--card:#1c1c1e;--line:rgba(84,84,88,.55);
---fill:rgba(118,118,128,.24);--sub:rgba(235,235,245,.6);--acc:#0a84ff;--bad:#ff453a;--ok:#30d158;
---glass:rgba(29,29,31,.78)}}
+:root{--bg:#f2f2f7;--fg:#000;--card:rgba(255,255,255,.74);--line:rgba(60,60,67,.16);--fill:rgba(118,118,128,.12);
+--fill2:rgba(0,122,255,.14);--sub:rgba(60,60,67,.62);--acc:#007aff;--bad:#ff3b30;--ok:#34c759;
+--glass:rgba(250,250,252,.62);--glassline:rgba(255,255,255,.65);--shadow:0 8px 30px rgba(0,0,0,.12);
+--bgimg:radial-gradient(60% 38% at 12% 0%,rgba(0,122,255,.26),transparent),
+radial-gradient(50% 34% at 100% 18%,rgba(175,82,222,.20),transparent),
+radial-gradient(70% 40% at 55% 100%,rgba(52,199,89,.16),transparent);
+--sat:env(safe-area-inset-top,0px);--sab:env(safe-area-inset-bottom,0px)}
+@media(prefers-color-scheme:dark){:root{--bg:#000;--fg:#fff;--card:rgba(44,44,46,.66);--line:rgba(84,84,88,.5);
+--fill:rgba(118,118,128,.28);--fill2:rgba(10,132,255,.28);--sub:rgba(235,235,245,.6);--acc:#0a84ff;--bad:#ff453a;
+--ok:#30d158;--glass:rgba(40,40,44,.55);--glassline:rgba(255,255,255,.14);--shadow:0 8px 30px rgba(0,0,0,.5);
+--bgimg:radial-gradient(60% 38% at 12% 0%,rgba(10,132,255,.38),transparent),
+radial-gradient(50% 34% at 100% 18%,rgba(191,90,242,.30),transparent),
+radial-gradient(70% 40% at 55% 100%,rgba(48,209,88,.20),transparent)}}
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
-html{-webkit-text-size-adjust:100%}
-body{margin:0;background:var(--bg);color:var(--fg);
-font:17px/1.4 -apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Roboto,"Helvetica Neue",sans-serif;
--webkit-font-smoothing:antialiased;padding-top:var(--sat)}
-header{position:sticky;top:0;z-index:10;display:flex;align-items:center;gap:12px;
-padding:10px max(16px,calc((100% - 960px)/2));background:var(--glass);
--webkit-backdrop-filter:saturate(180%) blur(22px);backdrop-filter:saturate(180%) blur(22px);
-border-bottom:.5px solid var(--line)}
-header strong{font-size:17px;font-weight:600;white-space:nowrap}
-nav{display:flex;gap:4px;flex:1;overflow-x:auto;scrollbar-width:none}nav::-webkit-scrollbar{display:none}
-nav a{display:flex;align-items:center;gap:6px;padding:6px 14px;border-radius:999px;color:var(--sub);
-text-decoration:none;font-size:15px;font-weight:500;white-space:nowrap;transition:background .2s,color .2s}
-nav a i{font-style:normal;font-size:16px}
-nav a:hover{background:var(--fill)}nav a.on{background:var(--acc);color:#fff}
-main{max-width:960px;margin:0 auto;padding:8px 16px calc(40px + var(--sab))}
-h1{font-size:34px;line-height:1.15;font-weight:700;letter-spacing:-.02em;margin:18px 4px 18px}
-h2{font-size:13px;font-weight:400;color:var(--sub);text-transform:uppercase;letter-spacing:.02em;margin:28px 16px 8px}
-p{margin:.5rem 4px}code{font:13px ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--fill);
-padding:2px 6px;border-radius:6px}
-a{color:var(--acc);text-decoration:none}
-.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px}
-.card{background:var(--card);border-radius:var(--r);padding:14px 16px;min-width:0}
-.card b{display:block;font-size:22px;font-weight:600;letter-spacing:-.01em;overflow-wrap:anywhere}
-.card span{color:var(--sub);font-size:13px}
-.wrap{overflow-x:auto;background:var(--card);border-radius:var(--r);-webkit-overflow-scrolling:touch}
+html{-webkit-text-size-adjust:100%;background:var(--bg)}
+body{margin:0;background:transparent;color:var(--fg);min-height:100vh;
+font:17px/1.4 -apple-system,BlinkMacSystemFont,"SF Pro Text","SF Pro Display","Segoe UI",Roboto,"Helvetica Neue",sans-serif;
+-webkit-font-smoothing:antialiased}
+.bg{position:fixed;inset:0;z-index:-1;background:var(--bgimg),var(--bg)}
+.page{max-width:980px;margin:0 auto;padding:calc(10px + var(--sat)) 16px calc(130px + var(--sab))}
+.top{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:44px}
+.brand{font-weight:600;font-size:17px;display:flex;align-items:center;gap:8px;white-space:nowrap}
+.dot{width:9px;height:9px;border-radius:50%;background:var(--ok);box-shadow:0 0 0 4px color-mix(in srgb,var(--ok) 25%,transparent)}
+h1{font-size:34px;line-height:1.12;font-weight:700;letter-spacing:-.025em;margin:14px 2px 16px}
+h2{font-size:13px;font-weight:500;color:var(--sub);text-transform:uppercase;letter-spacing:.03em;margin:28px 14px 8px}
+p{margin:.5rem 2px}a{color:var(--acc);text-decoration:none}
+code{font:13px ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--fill);padding:2px 6px;border-radius:6px;overflow-wrap:anywhere}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px}
+.card,.wrap,form.row,details,pre{background:var(--card);border:.5px solid var(--glassline);border-radius:22px;
+-webkit-backdrop-filter:blur(18px) saturate(160%);backdrop-filter:blur(18px) saturate(160%)}
+.card{padding:14px 16px;min-width:0}
+.card b{display:block;font-size:22px;font-weight:600;letter-spacing:-.015em;line-height:1.2;overflow-wrap:break-word;text-wrap:balance}
+.card span{display:block;margin-top:2px;color:var(--sub);font-size:13px}
+.wrap{overflow-x:auto;-webkit-overflow-scrolling:touch}
 table{border-collapse:collapse;width:100%;font-size:15px}
 th,td{padding:12px 16px;text-align:left;border-bottom:.5px solid var(--line);vertical-align:middle}
-th{font-size:13px;font-weight:500;color:var(--sub);white-space:nowrap}
+th{font-size:12.5px;font-weight:500;color:var(--sub);white-space:nowrap}
 tr:last-child td{border-bottom:0}
-input,select,button{font:inherit;font-size:16px;border-radius:10px;border:0;padding:9px 14px;outline:0}
-input,select{background:var(--fill);color:inherit;min-width:0}
-input:focus,select:focus{box-shadow:0 0 0 3px color-mix(in srgb,var(--acc) 35%,transparent)}
-input[type=checkbox]{width:22px;height:22px;accent-color:var(--acc);vertical-align:middle;margin-right:6px}
-button{background:var(--acc);color:#fff;font-weight:600;cursor:pointer;transition:opacity .15s,transform .1s;white-space:nowrap}
-button:hover{opacity:.9}button:active{opacity:.7;transform:scale(.97)}
-button.bad{background:color-mix(in srgb,var(--bad) 14%,transparent);color:var(--bad)}
-button.ghost{background:var(--fill);color:var(--acc)}
+td{overflow-wrap:anywhere}
+input,select,button{font:inherit;font-size:16px;border-radius:12px;border:0;padding:10px 14px;outline:0;min-height:42px}
+input,select{background:var(--fill);color:inherit;min-width:0;max-width:100%}
+input:focus,select:focus{box-shadow:0 0 0 3px color-mix(in srgb,var(--acc) 40%,transparent)}
+input[type=checkbox]{width:24px;height:24px;min-height:0;accent-color:var(--acc);vertical-align:middle;margin-right:8px}
+button{background:var(--acc);color:#fff;font-weight:600;cursor:pointer;transition:opacity .15s,transform .12s;white-space:nowrap;border-radius:999px;padding:10px 20px}
+button:hover{opacity:.9}button:active{opacity:.65;transform:scale(.96)}
+button.bad{background:color-mix(in srgb,var(--bad) 16%,transparent);color:var(--bad)}
+button.ghost{background:var(--fill);color:var(--acc);padding:8px 16px;min-height:36px;font-size:15px}
 form.inline{display:inline}
-form.row{display:flex;flex-wrap:wrap;gap:10px;align-items:center;background:var(--card);
-border-radius:var(--r);padding:12px 16px;margin:0 0 8px}
-.flash{background:var(--ok);color:#fff;padding:12px 16px;border-radius:var(--r);margin:12px 0 0;font-weight:500}
-.err{background:var(--bad)}
-pre{background:var(--card);border-radius:var(--r);padding:14px 16px;overflow:auto;font:12.5px/1.5 ui-monospace,Menlo,monospace;
-max-height:70vh;margin:8px 0}
-details{background:var(--card);border-radius:var(--r);padding:12px 16px}summary{cursor:pointer;color:var(--acc)}
+form.row{display:flex;flex-wrap:wrap;gap:10px;align-items:center;padding:12px 14px;margin:0 0 10px}
+label{overflow-wrap:anywhere}
+.flash{background:var(--ok);color:#fff;padding:12px 16px;border-radius:18px;margin:10px 0 0;font-weight:500;
+box-shadow:var(--shadow)}.err{background:var(--bad)}
+pre{padding:14px 16px;overflow:auto;font:12px/1.55 ui-monospace,Menlo,monospace;max-height:70vh;margin:8px 0;
+white-space:pre-wrap;overflow-wrap:anywhere}
+details{padding:12px 16px}summary{cursor:pointer;color:var(--acc);font-weight:500}
 .muted{color:var(--sub)}
-.login{max-width:360px;margin:14vh auto 0;padding:16px;text-align:center}
-.login h1{font-size:28px;margin-bottom:24px}
-.login form.row{flex-direction:column;align-items:stretch;padding:16px}
-.login input,.login button{width:100%;padding:12px 14px}
-@media(max-width:640px){
-header strong{display:none}
-header{padding:8px 12px}
-nav{position:fixed;left:0;right:0;bottom:0;z-index:20;justify-content:space-around;gap:0;
-padding:6px 4px calc(6px + var(--sab));background:var(--glass);
--webkit-backdrop-filter:saturate(180%) blur(22px);backdrop-filter:saturate(180%) blur(22px);
-border-top:.5px solid var(--line)}
-nav a{flex-direction:column;gap:2px;padding:4px 6px;border-radius:10px;font-size:10px;background:none!important;
-color:var(--sub)}
-nav a i{font-size:22px}nav a.on{color:var(--acc)}
-header{justify-content:flex-end}
-main{padding-bottom:calc(90px + var(--sab))}
-h1{font-size:30px}
-th,td{padding:10px 12px}
+.login{max-width:380px;margin:16vh auto 0;padding:16px;text-align:center}
+.login h1{font-size:28px;margin-bottom:22px;text-align:center}
+.login form.row{flex-direction:column;align-items:stretch;padding:16px;gap:12px}
+.login input,.login button{width:100%;padding:13px 16px}
+#lg-root{position:fixed;inset:0;z-index:30;pointer-events:none;overflow:visible}
+.lg-bg{position:absolute;inset:0;background:var(--bgimg),var(--bg)}
+.glass{position:absolute;pointer-events:auto;left:0;right:0;margin:0 auto;width:max-content;max-width:calc(100% - 24px);
+display:flex;gap:2px;padding:6px;border-radius:32px;background:var(--glass);border:.5px solid var(--glassline);
+-webkit-backdrop-filter:blur(26px) saturate(190%);backdrop-filter:blur(26px) saturate(190%);box-shadow:var(--shadow)}
+.lg-on .glass{background:none;border-color:transparent;box-shadow:none;-webkit-backdrop-filter:none;backdrop-filter:none}
+.glass a{position:relative;display:flex;align-items:center;gap:8px;padding:9px 16px;border-radius:26px;color:var(--sub);
+font-size:15px;font-weight:500;white-space:nowrap;transition:background .25s,color .25s}
+.glass a i{font-style:normal;font-size:18px;line-height:1}
+.glass a.on{background:var(--fill2);color:var(--acc)}
+.glass{top:calc(10px + var(--sat))}
+@media(min-width:761px){.page{padding-top:calc(78px + var(--sat));padding-bottom:60px}.top{position:absolute;left:0;right:0;top:calc(18px + var(--sat));padding:0 16px;max-width:980px;margin:0 auto}}
+@media(max-width:760px){
+.page{padding-left:14px;padding-right:14px}
+.glass{top:auto;bottom:calc(10px + var(--sab));left:10px;right:10px;width:auto;max-width:none;justify-content:space-between}
+.glass a{flex:1 1 0;min-width:0;flex-direction:column;gap:2px;padding:7px 2px;font-size:10.5px;justify-content:center;border-radius:24px}
+.glass a i{font-size:21px}
+h1{font-size:31px}
+.cards{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.card.wide{grid-column:1/-1}
+.card b{font-size:20px}
+.wrap{background:none;border:0;border-radius:0;overflow:visible;-webkit-backdrop-filter:none;backdrop-filter:none}
+table,tbody,tr,td{display:block;width:100%}
+tr.h{display:none}
+tr{background:var(--card);border:.5px solid var(--glassline);border-radius:22px;padding:4px 16px;margin:0 0 10px;
+-webkit-backdrop-filter:blur(18px) saturate(160%);backdrop-filter:blur(18px) saturate(160%)}
+td{display:flex;justify-content:space-between;align-items:baseline;gap:16px;padding:9px 0;text-align:right;
+border-bottom:.5px solid var(--line);font-size:15px}
+td::before{content:attr(data-label);flex:none;color:var(--sub);font-size:13px;text-align:left}
+td[data-label=""]{justify-content:flex-end}td[data-label=""]::before{display:none}
+form.row>*{flex:1 1 100%}form.row>input[type=hidden]{display:none}
+form.row>button{width:100%}form.row label{display:flex;align-items:center;gap:8px}
+form.row label input[type=number]{flex:1;width:auto!important}
 }
 @media(prefers-reduced-motion:reduce){*{transition:none!important}}
 """
@@ -107,6 +129,25 @@ ICONS = {
 }
 
 
+LG_JS = """<script type="module">
+const root=document.getElementById('lg-root');
+try{
+const gl=document.createElement('canvas');
+if(!(gl.getContext('webgl')||gl.getContext('experimental-webgl')))throw 0;
+if(matchMedia('(prefers-reduced-motion: reduce)').matches||/[?&]lg=0/.test(location.search))throw 0;
+const {LiquidGlass}=await import('https://cdn.jsdelivr.net/npm/@ybouane/liquidglass/dist/index.js');
+const inst=await LiquidGlass.init({root,glassElements:[root.querySelector('.glass')]});
+root.classList.add('lg-on');
+addEventListener('pagehide',()=>inst.destroy());
+}catch(e){/* giữ giao diện kính CSS dự phòng */}
+</script>"""
+
+LG_CFG = (
+    '{"cornerRadius":32,"zRadius":22,"blurAmount":0.3,"refraction":0.55,"chromAberration":0.03,'
+    '"edgeHighlight":0.08,"specular":0.25,"shadowOpacity":0.18,"shadowSpread":14,"shadowOffsetY":6}'
+)
+
+
 def esc(value) -> str:
     return html.escape(str(value), quote=True)
 
@@ -119,21 +160,24 @@ def _doc(title: str, inner: str) -> str:
         '<meta name="theme-color" content="#f2f2f7" media="(prefers-color-scheme: light)">'
         '<meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">'
         f"<title>{esc(title)} · Gemini Dashboard</title><style>{CSS}</style></head>"
-        f"<body>{inner}</body></html>"
+        f'<body><div class="bg"></div>{inner}</body></html>'
     )
 
 
 def layout(*, title: str, body: str, csrf: str, active: str, msg: str = "") -> str:
     nav = "".join(
-        f'<a href="{h}"{" class=on" if h == active else ""}><i>{ICONS.get(h, "•")}</i>{esc(label)}</a>'
+        f'<a href="{h}"{" class=on" if h == active else ""}><i>{ICONS.get(h, "•")}</i><span>{esc(label)}</span></a>'
         for h, label in NAV
     )
     flash = f'<div class="flash">{esc(msg)}</div>' if msg else ""
     inner = (
-        f"<header><strong>🤖 Gemini</strong><nav>{nav}</nav>"
+        '<div class="page"><div class="top"><div class="brand"><span class="dot"></span>Gemini</div>'
         f'<form class="inline" method="post" action="/logout">'
-        f'<input type="hidden" name="csrf" value="{esc(csrf)}"><button class="ghost">Đăng xuất</button></form>'
-        f"</header><main>{flash}<h1>{esc(title)}</h1>{body}</main>"
+        f'<input type="hidden" name="csrf" value="{esc(csrf)}"><button class="ghost">Đăng xuất</button></form></div>'
+        f"{flash}<h1>{esc(title)}</h1>{body}</div>"
+        f'<div id="lg-root"><div class="lg-bg"></div>'
+        f"<nav class=\"glass\" data-config='{LG_CFG}'>{nav}</nav></div>"
+        + LG_JS
     )
     return _doc(title, inner)
 
@@ -154,8 +198,13 @@ def table(headers: list[str], rows: list[list[str]], empty: str = "Không có d�
     if not rows:
         return f'<p class="muted">{esc(empty)}</p>'
     head = "".join(f"<th>{esc(h)}</th>" for h in headers)
-    body = "".join("<tr>" + "".join(f"<td>{c}</td>" for c in r) + "</tr>" for r in rows)
-    return f'<div class="wrap"><table><tr>{head}</tr>{body}</table></div>'
+    body = "".join(
+        "<tr>" + "".join(
+            f'<td data-label="{esc(headers[i] if i < len(headers) else "")}">{c}</td>' for i, c in enumerate(r)
+        ) + "</tr>"
+        for r in rows
+    )
+    return f'<div class="wrap"><table><tr class="h">{head}</tr>{body}</table></div>'
 
 
 def post_form(action: str, csrf: str, fields: str, button: str, *, inline=False, bad=False) -> str:
@@ -187,7 +236,10 @@ def overview_body(stats: dict, guilds: list[dict]) -> str:
         ("Model", stats["model"]),
         ("Python / discord.py", f"{stats['python']} / {stats['dpy']}"),
     ]
-    html_cards = "".join(f'<div class="card"><b>{esc(v)}</b><span>{esc(k)}</span></div>' for k, v in cards)
+    html_cards = "".join(
+        f'<div class="card{" wide" if len(str(v)) > 12 else ""}"><b>{esc(v)}</b><span>{esc(k)}</span></div>'
+        for k, v in cards
+    )
     rows = [
         [esc(g["name"]), esc(g["id"]), esc(g["members"]), esc(g["autochat"]), esc(g["reminders"])]
         for g in guilds

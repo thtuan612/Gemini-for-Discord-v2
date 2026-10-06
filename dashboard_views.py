@@ -1,5 +1,8 @@
 """Giao diện + logic thuần của dashboard (không phụ thuộc aiohttp/discord → dễ test).
-Phong cách Liquid Glass: CSS thuần, tương thích CSP (không JS, không ảnh, không font ngoài)."""
+
+Giao diện theo phong cách iOS: large title, nhóm danh sách bo góc, thanh điều hướng kính mờ,
+tab bar dưới cùng trên điện thoại, tự đổi sáng/tối theo hệ thống.
+"""
 
 from __future__ import annotations
 
@@ -9,109 +12,80 @@ import time
 
 from utils import format_bytes, format_uptime
 
-CSS = r"""
-:root{
-  --bg0:#0b1020;--fg:#eef1ff;--muted:rgba(238,241,255,.62);
-  --glass:rgba(255,255,255,.07);--sheen:rgba(255,255,255,.17);
-  --edge:rgba(255,255,255,.24);--line:rgba(255,255,255,.09);
-  --acc:#6d7bff;--acc2:#9a6bff;--bad:#ff5a62;--ok:#2fbf86;
-  --shadow:rgba(2,6,23,.45);--r:22px
-}
-@media(prefers-color-scheme:light){:root{
-  --bg0:#e8ecfa;--fg:#151a30;--muted:rgba(21,26,48,.6);
-  --glass:rgba(255,255,255,.5);--sheen:rgba(255,255,255,.9);
-  --edge:rgba(255,255,255,.95);--line:rgba(21,26,48,.08);--shadow:rgba(70,80,140,.2)
-}}
-*{box-sizing:border-box}
+CSS = """
+:root{--bg:#f2f2f7;--fg:#000;--card:#fff;--line:rgba(60,60,67,.18);--fill:rgba(118,118,128,.12);
+--sub:rgba(60,60,67,.6);--acc:#007aff;--bad:#ff3b30;--ok:#34c759;--glass:rgba(249,249,249,.78);
+--r:14px;--sat:env(safe-area-inset-top,0px);--sab:env(safe-area-inset-bottom,0px)}
+@media(prefers-color-scheme:dark){:root{--bg:#000;--fg:#fff;--card:#1c1c1e;--line:rgba(84,84,88,.55);
+--fill:rgba(118,118,128,.24);--sub:rgba(235,235,245,.6);--acc:#0a84ff;--bad:#ff453a;--ok:#30d158;
+--glass:rgba(29,29,31,.78)}}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 html{-webkit-text-size-adjust:100%}
-body{margin:0;min-height:100vh;background:var(--bg0);color:var(--fg);
-  font:15px/1.55 system-ui,-apple-system,"Segoe UI Variable","Segoe UI",Roboto,sans-serif}
-body::before{content:"";position:fixed;inset:0;z-index:-1;
-  background:
-   radial-gradient(40vmax 40vmax at 12% 8%,rgba(88,101,242,.62),transparent 62%),
-   radial-gradient(34vmax 34vmax at 90% 16%,rgba(0,200,210,.36),transparent 62%),
-   radial-gradient(38vmax 38vmax at 72% 94%,rgba(255,80,165,.34),transparent 62%),
-   radial-gradient(30vmax 30vmax at 6% 88%,rgba(140,95,255,.42),transparent 62%),
-   var(--bg0)}
-
-/* ---- kính: header, thẻ, bảng, khung log, form đăng nhập ---- */
-header,.card,.wrap,pre,.login,.flash{
-  background:
-   linear-gradient(135deg,var(--sheen) 0%,rgba(255,255,255,.03) 38%,rgba(255,255,255,.02) 62%,rgba(255,255,255,.1) 100%),
-   var(--glass);
-  -webkit-backdrop-filter:blur(24px) saturate(190%);backdrop-filter:blur(24px) saturate(190%);
-  border:1px solid var(--line);
-  box-shadow:inset 0 1px 0 var(--edge),inset 0 -1px 0 rgba(255,255,255,.05),
-             inset 1px 0 0 rgba(255,255,255,.1),0 14px 40px var(--shadow)}
-
-header{position:sticky;top:max(.6rem,env(safe-area-inset-top));z-index:5;margin:.6rem;
-  display:flex;flex-wrap:wrap;gap:.4rem 1rem;align-items:center;padding:.5rem .8rem;border-radius:26px}
-header strong{font-weight:650;letter-spacing:-.01em}
-nav{display:flex;flex-wrap:wrap;gap:.2rem;flex:1}
-nav a{padding:.35rem .85rem;border-radius:999px;color:inherit;text-decoration:none;opacity:.78;
-  transition:background .15s,opacity .15s}
-nav a:hover{opacity:1;background:rgba(255,255,255,.1)}
-nav a.on{opacity:1;color:#fff;
-  background:linear-gradient(180deg,rgba(255,255,255,.28),rgba(255,255,255,.04)),var(--acc);
-  box-shadow:inset 0 1px 0 rgba(255,255,255,.55),0 4px 14px rgba(109,123,255,.45)}
-
-main{max-width:1000px;margin:0 auto;padding:1rem}
-h1{font-size:1.6rem;font-weight:650;letter-spacing:-.02em;margin:.4rem 0 1.1rem}
-h2{font-size:1.02rem;font-weight:600;margin:1.6rem 0 .6rem;color:var(--muted)}
-
-.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:.8rem}
-.card{border-radius:var(--r);padding:.85rem 1rem}
-.card b{display:block;font-size:1.2rem;font-weight:650;letter-spacing:-.01em;overflow-wrap:anywhere}
-.card span{color:var(--muted);font-size:.85rem}
-
-.wrap{overflow-x:auto;border-radius:var(--r)}
-table{border-collapse:collapse;width:100%}
-th,td{padding:.6rem .85rem;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}
-th{font-size:.8rem;font-weight:600;color:var(--muted)}
+body{margin:0;background:var(--bg);color:var(--fg);
+font:17px/1.4 -apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Roboto,"Helvetica Neue",sans-serif;
+-webkit-font-smoothing:antialiased;padding-top:var(--sat)}
+header{position:sticky;top:0;z-index:10;display:flex;align-items:center;gap:12px;
+padding:10px max(16px,calc((100% - 960px)/2));background:var(--glass);
+-webkit-backdrop-filter:saturate(180%) blur(22px);backdrop-filter:saturate(180%) blur(22px);
+border-bottom:.5px solid var(--line)}
+header strong{font-size:17px;font-weight:600;white-space:nowrap}
+nav{display:flex;gap:4px;flex:1;overflow-x:auto;scrollbar-width:none}nav::-webkit-scrollbar{display:none}
+nav a{display:flex;align-items:center;gap:6px;padding:6px 14px;border-radius:999px;color:var(--sub);
+text-decoration:none;font-size:15px;font-weight:500;white-space:nowrap;transition:background .2s,color .2s}
+nav a i{font-style:normal;font-size:16px}
+nav a:hover{background:var(--fill)}nav a.on{background:var(--acc);color:#fff}
+main{max-width:960px;margin:0 auto;padding:8px 16px calc(40px + var(--sab))}
+h1{font-size:34px;line-height:1.15;font-weight:700;letter-spacing:-.02em;margin:18px 4px 18px}
+h2{font-size:13px;font-weight:400;color:var(--sub);text-transform:uppercase;letter-spacing:.02em;margin:28px 16px 8px}
+p{margin:.5rem 4px}code{font:13px ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--fill);
+padding:2px 6px;border-radius:6px}
+a{color:var(--acc);text-decoration:none}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px}
+.card{background:var(--card);border-radius:var(--r);padding:14px 16px;min-width:0}
+.card b{display:block;font-size:22px;font-weight:600;letter-spacing:-.01em;overflow-wrap:anywhere}
+.card span{color:var(--sub);font-size:13px}
+.wrap{overflow-x:auto;background:var(--card);border-radius:var(--r);-webkit-overflow-scrolling:touch}
+table{border-collapse:collapse;width:100%;font-size:15px}
+th,td{padding:12px 16px;text-align:left;border-bottom:.5px solid var(--line);vertical-align:middle}
+th{font-size:13px;font-weight:500;color:var(--sub);white-space:nowrap}
 tr:last-child td{border-bottom:0}
-tr:hover td{background:rgba(255,255,255,.04)}
-
-input,select,button{font:inherit;padding:.5rem .8rem;border-radius:14px;color:inherit;
-  border:1px solid var(--line);background:rgba(255,255,255,.08);
-  -webkit-backdrop-filter:blur(12px);backdrop-filter:blur(12px);
-  box-shadow:inset 0 1px 2px rgba(0,0,0,.18)}
-input::placeholder{color:var(--muted)}
-select option{color:#151a30}
-button{cursor:pointer;color:#fff;border:0;font-weight:600;
-  background:linear-gradient(180deg,rgba(255,255,255,.32),rgba(255,255,255,0) 55%),linear-gradient(135deg,var(--acc),var(--acc2));
-  box-shadow:inset 0 1px 0 rgba(255,255,255,.6),0 6px 18px rgba(109,123,255,.4);
-  transition:transform .12s,filter .12s}
-button:hover{filter:brightness(1.1)}
-button:active{transform:scale(.97)}
-button.bad{background:linear-gradient(180deg,rgba(255,255,255,.3),rgba(255,255,255,0) 55%),var(--bad);
-  box-shadow:inset 0 1px 0 rgba(255,255,255,.55),0 6px 18px rgba(255,90,98,.38)}
-button.ghost{color:inherit;background:rgba(255,255,255,.08);border:1px solid var(--line);
-  box-shadow:inset 0 1px 0 var(--edge)}
-:focus-visible{outline:2px solid #fff;outline-offset:2px;box-shadow:0 0 0 5px rgba(109,123,255,.6)}
-
+input,select,button{font:inherit;font-size:16px;border-radius:10px;border:0;padding:9px 14px;outline:0}
+input,select{background:var(--fill);color:inherit;min-width:0}
+input:focus,select:focus{box-shadow:0 0 0 3px color-mix(in srgb,var(--acc) 35%,transparent)}
+input[type=checkbox]{width:22px;height:22px;accent-color:var(--acc);vertical-align:middle;margin-right:6px}
+button{background:var(--acc);color:#fff;font-weight:600;cursor:pointer;transition:opacity .15s,transform .1s;white-space:nowrap}
+button:hover{opacity:.9}button:active{opacity:.7;transform:scale(.97)}
+button.bad{background:color-mix(in srgb,var(--bad) 14%,transparent);color:var(--bad)}
+button.ghost{background:var(--fill);color:var(--acc)}
 form.inline{display:inline}
-form.row{display:flex;flex-wrap:wrap;gap:.5rem;align-items:center;margin:.5rem 0}
-
-.flash{padding:.6rem .95rem;border-radius:16px;margin-bottom:1rem;
-  box-shadow:inset 0 1px 0 var(--edge),inset 0 0 0 1px rgba(47,191,134,.55),0 10px 30px var(--shadow)}
-.err{box-shadow:inset 0 1px 0 var(--edge),inset 0 0 0 1px rgba(255,90,98,.7),0 10px 30px var(--shadow)}
-
-pre{border-radius:var(--r);padding:.9rem 1rem;overflow:auto;font-size:.8rem;max-height:70vh;
-  background:rgba(5,8,20,.45)}
-a{color:var(--acc)}
-.muted{color:var(--muted)}
-.login{max-width:360px;margin:14vh auto;padding:1.4rem;border-radius:30px}
-.login h1{margin-top:0}
-
-/* trình duyệt không hỗ trợ backdrop-filter hoặc người dùng tắt hiệu ứng trong suốt */
-@supports not ((backdrop-filter:blur(1px)) or (-webkit-backdrop-filter:blur(1px))){
-  header,.card,.wrap,pre,.login,.flash{background:rgba(28,33,66,.92)}
-}
-@media(prefers-reduced-transparency:reduce){
-  header,.card,.wrap,pre,.login,.flash{-webkit-backdrop-filter:none;backdrop-filter:none;background:var(--bg0)}
+form.row{display:flex;flex-wrap:wrap;gap:10px;align-items:center;background:var(--card);
+border-radius:var(--r);padding:12px 16px;margin:0 0 8px}
+.flash{background:var(--ok);color:#fff;padding:12px 16px;border-radius:var(--r);margin:12px 0 0;font-weight:500}
+.err{background:var(--bad)}
+pre{background:var(--card);border-radius:var(--r);padding:14px 16px;overflow:auto;font:12.5px/1.5 ui-monospace,Menlo,monospace;
+max-height:70vh;margin:8px 0}
+details{background:var(--card);border-radius:var(--r);padding:12px 16px}summary{cursor:pointer;color:var(--acc)}
+.muted{color:var(--sub)}
+.login{max-width:360px;margin:14vh auto 0;padding:16px;text-align:center}
+.login h1{font-size:28px;margin-bottom:24px}
+.login form.row{flex-direction:column;align-items:stretch;padding:16px}
+.login input,.login button{width:100%;padding:12px 14px}
+@media(max-width:640px){
+header strong{display:none}
+header{padding:8px 12px}
+nav{position:fixed;left:0;right:0;bottom:0;z-index:20;justify-content:space-around;gap:0;
+padding:6px 4px calc(6px + var(--sab));background:var(--glass);
+-webkit-backdrop-filter:saturate(180%) blur(22px);backdrop-filter:saturate(180%) blur(22px);
+border-top:.5px solid var(--line)}
+nav a{flex-direction:column;gap:2px;padding:4px 6px;border-radius:10px;font-size:10px;background:none!important;
+color:var(--sub)}
+nav a i{font-size:22px}nav a.on{color:var(--acc)}
+header{justify-content:flex-end}
+main{padding-bottom:calc(90px + var(--sab))}
+h1{font-size:30px}
+th,td{padding:10px 12px}
 }
 @media(prefers-reduced-motion:reduce){*{transition:none!important}}
-@media(max-width:520px){main{padding:.7rem}h1{font-size:1.4rem}header{border-radius:22px}}
 """
 
 NAV = [
@@ -123,6 +97,15 @@ NAV = [
     ("/settings", "Cấu hình"),
 ]
 
+ICONS = {
+    "/": "📊",
+    "/autochat": "💬",
+    "/reminders": "⏰",
+    "/history": "🗂️",
+    "/logs": "📜",
+    "/settings": "⚙️",
+}
+
 
 def esc(value) -> str:
     return html.escape(str(value), quote=True)
@@ -132,7 +115,9 @@ def _doc(title: str, inner: str) -> str:
     return (
         '<!doctype html><html lang="vi"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">'
-        '<meta name="color-scheme" content="dark light">'
+        '<meta name="color-scheme" content="light dark">'
+        '<meta name="theme-color" content="#f2f2f7" media="(prefers-color-scheme: light)">'
+        '<meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">'
         f"<title>{esc(title)} · Gemini Dashboard</title><style>{CSS}</style></head>"
         f"<body>{inner}</body></html>"
     )
@@ -140,11 +125,12 @@ def _doc(title: str, inner: str) -> str:
 
 def layout(*, title: str, body: str, csrf: str, active: str, msg: str = "") -> str:
     nav = "".join(
-        f'<a href="{h}"{" class=on" if h == active else ""}>{esc(label)}</a>' for h, label in NAV
+        f'<a href="{h}"{" class=on" if h == active else ""}><i>{ICONS.get(h, "•")}</i>{esc(label)}</a>'
+        for h, label in NAV
     )
     flash = f'<div class="flash">{esc(msg)}</div>' if msg else ""
     inner = (
-        f"<header><strong>🤖 Gemini Dashboard</strong><nav>{nav}</nav>"
+        f"<header><strong>🤖 Gemini</strong><nav>{nav}</nav>"
         f'<form class="inline" method="post" action="/logout">'
         f'<input type="hidden" name="csrf" value="{esc(csrf)}"><button class="ghost">Đăng xuất</button></form>'
         f"</header><main>{flash}<h1>{esc(title)}</h1>{body}</main>"
@@ -158,7 +144,7 @@ def login_page(error: str = "") -> str:
         '<div class="login"><h1>🤖 Gemini Dashboard</h1>' + err +
         '<form method="post" action="/login" class="row">'
         '<input type="password" name="password" placeholder="Mật khẩu" autocomplete="current-password" '
-        'required autofocus style="flex:1"><button>Đăng nhập</button></form></div>'
+        'required autofocus><button>Đăng nhập</button></form></div>'
     )
     return _doc("Đăng nhập", inner)
 

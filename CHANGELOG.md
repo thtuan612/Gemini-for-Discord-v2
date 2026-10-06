@@ -1,5 +1,13 @@
 # Thay đổi
 
+## Web dashboard (mới)
+- Bật bằng `DASHBOARD_ENABLED=true` + `DASHBOARD_PASSWORD` (≥ 12 ký tự). Mặc định chỉ lắng nghe `127.0.0.1`.
+- Trang: Tổng quan (thông số như `/botinfo` + danh sách server), Auto-Chat (bật/tắt kênh), Reminder (xem/hủy),
+  Lịch sử (dọn theo ngày / theo user / toàn bộ / cache), Log (300 dòng gần nhất, đã che token), Cấu hình (chỉ xem).
+- Bảo mật: cookie `HttpOnly` + `SameSite=Strict`, CSRF token cho mọi POST, giới hạn 5 lần sai/10 phút/IP,
+  CSP chặt, không dùng JavaScript, escape toàn bộ dữ liệu hiển thị.
+- Không có thêm dependency ngoài `aiohttp` (vốn đã đi kèm discord.py).
+
 ## Bảo mật
 - `AllowedMentions.none()` đặt làm mặc định cho bot + mọi reminder → không thể ping @everyone/@here/role.
 - `/remind_cancel`: chỉ hủy được reminder của server mình; chỉ người tạo hoặc Admin/Owner mới hủy.

@@ -19,10 +19,13 @@ from google.genai.errors import ClientError, ServerError
 
 import config
 from db import Database
+from dashboard import Ctx as DashboardCtx
+from dashboard import install_log_buffer, start_dashboard
 from utils import (
     format_bytes,
     format_uptime,
     get_dir_size,
+    get_memory_limit_bytes,
     next_run_utc,
     parse_hhmm,
     split_message,
@@ -33,6 +36,8 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 log = logging.getLogger("discord-ai-bot")
+if config.DASHBOARD_ENABLED:
+    install_log_buffer()
 
 BOT_START_TIME = datetime.now(timezone.utc)
 NO_MENTIONS = discord.AllowedMentions.none()
@@ -114,9 +119,23 @@ def build_activity() -> discord.BaseActivity:
 
 
 class GeminiBot(commands.Bot):
+    dashboard_runner = None
+
     async def setup_hook(self) -> None:
         await db.init()
         auto_chat_channels.update(await db.load_auto_chat_channels())
+        if config.DASHBOARD_ENABLED:
+            try:
+                self.dashboard_runner = await start_dashboard(
+                    DashboardCtx(
+                        bot=self,
+                        db=db,
+                        auto_chat_channels=auto_chat_channels,
+                        history_cache=history_cache,
+                    )
+                )
+            except Exception:
+                log.exception("Không khởi động được dashboard (bot vẫn chạy bình thường)")
         if config.SYNC_ON_START:
             try:
                 synced = await self.tree.sync()
@@ -128,6 +147,8 @@ class GeminiBot(commands.Bot):
             history_purge_loop.start()
 
     async def close(self) -> None:
+        if self.dashboard_runner is not None:
+            await self.dashboard_runner.cleanup()
         await super().close()
         await db.close()
 
@@ -797,20 +818,6 @@ async def autochat_list_command(interaction: discord.Interaction):
         return
     mentions = [f"<#{cid}>" for cid in channel_ids]
     await interaction.response.send_message("📋 **Kênh đang bật auto-chat:**\n" + "\n".join(mentions))
-
-
-def get_memory_limit_bytes() -> int:
-    """Giới hạn RAM thật của container (cgroup); nếu không có thì trả về RAM host."""
-    host_total = psutil.virtual_memory().total
-    for path in ("/sys/fs/cgroup/memory.max", "/sys/fs/cgroup/memory/memory.limit_in_bytes"):
-        try:
-            with open(path) as f:
-                val = f.read().strip()
-            if val != "max" and int(val) < host_total:
-                return int(val)
-        except (FileNotFoundError, ValueError, PermissionError):
-            continue
-    return host_total
 
 
 @bot.tree.command(name="botinfo", description="[Admin/Owner] Xem thông số cấu hình & tình trạng hiện tại của bot")

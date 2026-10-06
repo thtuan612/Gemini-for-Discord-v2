@@ -4,6 +4,8 @@ from __future__ import annotations
 import os
 from datetime import datetime, timedelta, timezone
 
+import psutil
+
 from config import VN_TZ
 
 
@@ -81,3 +83,17 @@ def format_uptime(delta: timedelta) -> str:
     if not parts:
         parts.append(f"{seconds} giây")
     return " ".join(parts)
+
+
+def get_memory_limit_bytes() -> int:
+    """Giới hạn RAM thật của container (cgroup); nếu không có thì trả về RAM host."""
+    host_total = psutil.virtual_memory().total
+    for path in ("/sys/fs/cgroup/memory.max", "/sys/fs/cgroup/memory/memory.limit_in_bytes"):
+        try:
+            with open(path) as f:
+                val = f.read().strip()
+            if val != "max" and int(val) < host_total:
+                return int(val)
+        except (FileNotFoundError, ValueError, PermissionError):
+            continue
+    return host_total

@@ -103,3 +103,10 @@ MAX_REMINDER_LENGTH = _int("MAX_REMINDER_LENGTH", 1500)
 
 # --- Database ---
 DB_PATH = os.getenv("DB_PATH", "conversations.db")
+
+# --- Web dashboard ---
+DASHBOARD_ENABLED = _bool("DASHBOARD_ENABLED", False)
+DASHBOARD_HOST = os.getenv("DASHBOARD_HOST", "127.0.0.1")
+DASHBOARD_PORT = _int("DASHBOARD_PORT", 8080)
+DASHBOARD_PASSWORD = os.getenv("DASHBOARD_PASSWORD", "")
+DASHBOARD_SECURE_COOKIE = _bool("DASHBOARD_SECURE_COOKIE", False)  # bật khi chạy sau HTTPS

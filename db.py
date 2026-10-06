@@ -147,7 +147,23 @@ class Database:
         rowcount, _ = await self._q("DELETE FROM chat_history WHERE updated_at < ?", (cutoff,))
         return rowcount
 
+    async def count_history(self) -> int:
+        row = await self._q("SELECT COUNT(*) FROM chat_history", mode="one")
+        return row[0]
+
+    async def delete_all_history(self) -> int:
+        rowcount, _ = await self._q("DELETE FROM chat_history")
+        return rowcount
+
+    async def list_all_auto_chat(self):
+        return await self._q("SELECT channel_id, guild_id FROM auto_chat_channels", mode="all")
+
     # ---------- reminders ----------
+    async def list_all_active_reminders(self):
+        return await self._q(
+            "SELECT * FROM reminders WHERE active = 1 ORDER BY next_run_utc", mode="all"
+        )
+
     async def add_reminder(
         self,
         *,

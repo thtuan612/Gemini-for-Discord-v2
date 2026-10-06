@@ -7,7 +7,8 @@ CSS = r"""
   --glass:rgba(255,255,255,.07);--sheen:rgba(255,255,255,.17);
   --edge:rgba(255,255,255,.24);--line:rgba(255,255,255,.09);
   --acc:#6d7bff;--acc2:#9a6bff;--bad:#ff5a62;--ok:#2fbf86;
-  --shadow:rgba(2,6,23,.45);--r:22px
+  --shadow:rgba(2,6,23,.45);--r:22px;
+  --blur:24px;--sat:190%
 }
 @media(prefers-color-scheme:light){:root{
   --bg0:#e8ecfa;--fg:#151a30;--muted:rgba(21,26,48,.6);
@@ -16,25 +17,33 @@ CSS = r"""
 }}
 *{box-sizing:border-box}
 html{-webkit-text-size-adjust:100%}
-body{margin:0;min-height:100vh;background:var(--bg0);color:var(--fg);
-  font:15px/1.55 system-ui,-apple-system,"Segoe UI Variable","Segoe UI",Roboto,sans-serif}
-body::before{content:"";position:fixed;inset:0;z-index:-1;
-  background:
-   radial-gradient(40vmax 40vmax at 12% 8%,rgba(88,101,242,.62),transparent 62%),
-   radial-gradient(34vmax 34vmax at 90% 16%,rgba(0,200,210,.36),transparent 62%),
-   radial-gradient(38vmax 38vmax at 72% 94%,rgba(255,80,165,.34),transparent 62%),
-   radial-gradient(30vmax 30vmax at 6% 88%,rgba(140,95,255,.42),transparent 62%),
-   var(--bg0)}
+
+/* ✅ FIX: gradient đặt TRỰC TIẾP trên body, bỏ hẳn body::before z-index:-1 */
+body{
+  margin:0;min-height:100vh;color:var(--fg);
+  font:15px/1.55 system-ui,-apple-system,"Segoe UI Variable","Segoe UI",Roboto,sans-serif;
+  background-color:var(--bg0);
+  background-image:
+    radial-gradient(40vmax 40vmax at 12% 8%,  rgba(88,101,242,.62),  transparent 62%),
+    radial-gradient(34vmax 34vmax at 90% 16%, rgba(0,200,210,.36),   transparent 62%),
+    radial-gradient(38vmax 38vmax at 72% 94%, rgba(255,80,165,.34),  transparent 62%),
+    radial-gradient(30vmax 30vmax at 6% 88%,  rgba(140,95,255,.42),  transparent 62%);
+  background-attachment:fixed;
+  background-repeat:no-repeat;
+}
 
 /* ---- kính: header, thẻ, bảng, khung log, form đăng nhập ---- */
 header,.card,.wrap,pre,.login,.flash{
   background:
    linear-gradient(135deg,var(--sheen) 0%,rgba(255,255,255,.03) 38%,rgba(255,255,255,.02) 62%,rgba(255,255,255,.1) 100%),
    var(--glass);
-  -webkit-backdrop-filter:blur(24px) saturate(190%);backdrop-filter:blur(24px) saturate(190%);
+  -webkit-backdrop-filter:blur(var(--blur)) saturate(var(--sat));
+  backdrop-filter:blur(var(--blur)) saturate(var(--sat));
   border:1px solid var(--line);
   box-shadow:inset 0 1px 0 var(--edge),inset 0 -1px 0 rgba(255,255,255,.05),
-             inset 1px 0 0 rgba(255,255,255,.1),0 14px 40px var(--shadow)}
+             inset 1px 0 0 rgba(255,255,255,.1),0 14px 40px var(--shadow);
+  transform:translateZ(0)
+}
 
 header{position:sticky;top:max(.6rem,env(safe-area-inset-top));z-index:5;margin:.6rem;
   display:flex;flex-wrap:wrap;gap:.4rem 1rem;align-items:center;padding:.5rem .8rem;border-radius:26px}
@@ -100,8 +109,25 @@ a{color:var(--acc)}
   header,.card,.wrap,pre,.login,.flash{background:rgba(28,33,66,.92)}
 }
 @media(prefers-reduced-transparency:reduce){
-  header,.card,.wrap,pre,.login,.flash{-webkit-backdrop-filter:none;backdrop-filter:none;background:var(--bg0)}
+  header,.card,.wrap,pre,.login,.flash{-webkit-backdrop-filter:none;backdrop-filter:none;background:rgba(28,33,66,.85)}
+  body{background-attachment:scroll}
 }
 @media(prefers-reduced-motion:reduce){*{transition:none!important}}
-@media(max-width:520px){main{padding:.7rem}h1{font-size:1.4rem}header{border-radius:22px}}
+@media(max-width:520px){
+  main{padding:.7rem}
+  h1{font-size:1.4rem}
+  header{border-radius:22px}
+  :root{--blur:18px}
+}
+
+/* =========================================================
+   DẤU KIỂM TRA PHIÊN BẢN — thấy "V5" ở góc dưới phải = CSS mới đã nạp
+   ========================================================= */
+body::after{
+  content:"V5";
+  position:fixed;right:6px;bottom:6px;z-index:9999;
+  font:700 10px/1 system-ui,sans-serif;letter-spacing:.5px;
+  color:#00e0ff;background:rgba(0,0,0,.6);
+  padding:4px 6px;border-radius:6px;pointer-events:none
+}
 """

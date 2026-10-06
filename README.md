@@ -70,7 +70,8 @@ System prompt của bot nằm trong [`prompt.txt`](prompt.txt), sửa file này 
 
 ## 🖥️ Web dashboard
 
-Giao diện phong cách iOS: tiêu đề lớn, danh sách bo góc, thanh điều hướng kính mờ, tab bar dưới cùng trên điện thoại, tự chuyển sáng/tối theo hệ thống.
+Giao diện phong cách iOS: tiêu đề lớn, thẻ kính mờ bo góc, tab bar nổi dạng viên thuốc ở đáy màn hình điện thoại (thanh điều hướng nổi ở trên cùng khi dùng máy tính), bảng tự chuyển thành danh sách thẻ trên điện thoại, tự chuyển sáng/tối theo hệ thống.
+Thanh điều hướng dùng hiệu ứng [Liquid Glass](https://github.com/ybouane/liquidglass) (WebGL), tải từ CDN jsDelivr. Nếu trình duyệt không hỗ trợ WebGL, bật "giảm chuyển động", hoặc không tải được CDN, dashboard tự dùng kính mờ CSS thay thế. Thêm `?lg=0` vào URL để tắt hiệu ứng.
 
 Bật trong `.env`:
 

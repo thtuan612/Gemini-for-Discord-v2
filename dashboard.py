@@ -27,6 +27,9 @@ log = logging.getLogger("discord-ai-bot.dashboard")
 COOKIE = "gd_session"
 START_TIME = datetime.now(timezone.utc)
 
+# Các đường dẫn KHÔNG cần đăng nhập (login + tài nguyên tĩnh của login)
+PUBLIC_PATHS = frozenset({"/login", "/dashboard.css"})
+
 
 # ---------------------------------------------------------------- log buffer
 class LogBuffer(logging.Handler):
@@ -110,7 +113,7 @@ def _channel_label(bot, channel_id: int) -> str:
 @web.middleware
 async def security_middleware(request: web.Request, handler):
     try:
-        if request.path != "/login":
+        if request.path not in PUBLIC_PATHS:
             session = request.app["sessions"].get(request.cookies.get(COOKIE))
             if session is None:
                 raise web.HTTPFound("/login")
@@ -118,15 +121,49 @@ async def security_middleware(request: web.Request, handler):
         resp = await handler(request)
     except web.HTTPException as ex:
         resp = ex
+
     resp.headers["Cache-Control"] = "no-store"
     resp.headers["X-Content-Type-Options"] = "nosniff"
     resp.headers["Referrer-Policy"] = "no-referrer"
     resp.headers["X-Frame-Options"] = "DENY"
-    resp.headers["Content-Security-Policy"] = (
-        "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; "
-        "frame-ancestors 'none'; base-uri 'none'"
-    )
+
+    # CSS được tách ra file riêng → PHẢI cho phép 'self'
+    # Nếu vẫn để 'unsafe-inline' mà không có 'self', browser sẽ chặn dashboard.css
+    if request.path == "/dashboard.css":
+        resp.headers["Content-Security-Policy"] = (
+            "default-src 'none'; "
+            "style-src 'self'; "
+            "frame-ancestors 'none'; base-uri 'none'"
+        )
+    else:
+        resp.headers["Content-Security-Policy"] = (
+            "default-src 'none'; "
+            "style-src 'self' 'unsafe-inline'; "
+            "form-action 'self'; "
+            "frame-ancestors 'none'; base-uri 'none'"
+        )
     return resp
+
+
+# ---------------------------------------------------------------- tài nguyên tĩnh
+async def dashboard_css(request: web.Request) -> web.Response:
+    """Phục vụ file CSS đã tách khỏi dashboard_views.py."""
+    css = v.get_css()
+    if not css:
+        return web.Response(
+            text="/* dashboard.css chưa được tạo ở static/dashboard.css */",
+            content_type="text/css",
+            status=404,
+        )
+    return web.Response(
+        text=css,
+        content_type="text/css",
+        charset="utf-8",
+        headers={
+            # Để debug: không cache. Khi ổn định có thể đổi thành "public, max-age=3600"
+            "Cache-Control": "no-store, must-revalidate",
+        },
+    )
 
 
 # ---------------------------------------------------------------- đăng nhập
@@ -335,7 +372,13 @@ def create_app(ctx: Ctx, password: str | None = None) -> web.Application:
     app["limiter"] = v.LoginLimiter()
     app["disk_cache"] = {"at": 0.0, "value": 0}
     app.add_routes([
+        # Tài nguyên tĩnh — đặt trước các route khác để không bị bắt nhầm
+        web.get("/dashboard.css", dashboard_css),
+
+        # Xác thực
         web.get("/login", login_get), web.post("/login", login_post), web.post("/logout", logout_post),
+
+        # Các trang
         web.get("/", overview),
         web.get("/reminders", reminders_get), web.post("/reminders/cancel", reminders_cancel),
         web.get("/autochat", autochat_get), web.post("/autochat/add", autochat_add),

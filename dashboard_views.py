@@ -14,25 +14,30 @@ from utils import format_bytes, format_uptime
 
 CSS = """
 :root{color-scheme:dark;--bg:#0a0e1c;--fg:#f3f5fa;--mut:rgba(243,245,250,.62);
---g1:rgba(255,255,255,.20);--g2:rgba(255,255,255,.10);--line:rgba(255,255,255,.22);--hi:rgba(255,255,255,.42);
+--g1:rgba(255,255,255,.22);--g2:rgba(255,255,255,.08);--line:rgba(255,255,255,.25);--hi:rgba(255,255,255,.45);
 --acc:#7b8cff;--acc2:#b06bff;--bad:#ff5a64;--ok:#2fd3a0;--sh:0 10px 34px rgba(0,0,0,.38);--side:252px;
 --blur:44px;--sat:200%}
 @media(prefers-color-scheme:light){:root{color-scheme:light;--bg:#e8ecf8;--fg:#141824;--mut:rgba(20,24,36,.6);
---g1:rgba(255,255,255,.82);--g2:rgba(255,255,255,.52);--line:rgba(255,255,255,.88);--hi:#fff;--sh:0 10px 34px rgba(50,60,110,.16)}}
+--g1:rgba(255,255,255,.78);--g2:rgba(255,255,255,.46);--line:rgba(255,255,255,.88);--hi:#fff;--sh:0 10px 34px rgba(50,60,110,.16)}}
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 html{scroll-padding-top:5rem}
-body{margin:0;min-height:100vh;min-height:100dvh;background:var(--bg);color:var(--fg);overflow-x:hidden;white-space:nowrap;
-font:15px/1.5 -apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Roboto,system-ui,sans-serif;-webkit-font-smoothing:antialiased}
-body::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;
-background:radial-gradient(55vmax 55vmax at 8% -5%,rgba(91,107,255,.55),transparent 62%),
+body{margin:0;min-height:100vh;min-height:100dvh;color:var(--fg);overflow-x:hidden;white-space:nowrap;
+font:15px/1.5 -apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Roboto,system-ui,sans-serif;-webkit-font-smoothing:antialiased;
+background-color:var(--bg);
+background-image:radial-gradient(55vmax 55vmax at 8% -5%,rgba(91,107,255,.55),transparent 62%),
 radial-gradient(48vmax 48vmax at 105% 18%,rgba(255,106,213,.42),transparent 62%),
-radial-gradient(60vmax 60vmax at 35% 112%,rgba(34,211,238,.38),transparent 62%)}
-@media(prefers-color-scheme:light){body::before{opacity:.7}}
+radial-gradient(60vmax 60vmax at 35% 112%,rgba(34,211,238,.38),transparent 62%);
+background-attachment:fixed}
+@media(prefers-color-scheme:light){
+body{background-image:radial-gradient(55vmax 55vmax at 8% -5%,rgba(91,107,255,.35),transparent 62%),
+radial-gradient(48vmax 48vmax at 105% 18%,rgba(255,106,213,.25),transparent 62%),
+radial-gradient(60vmax 60vmax at 35% 112%,rgba(34,211,238,.20),transparent 62%)}}
 a{color:inherit}code{font:.88em ui-monospace,SFMono-Regular,Menlo,monospace}
 
 .glass,.card,.wrap,pre,.flash,.side,.top,details{background:linear-gradient(135deg,var(--g1),var(--g2));
 -webkit-backdrop-filter:blur(var(--blur)) saturate(var(--sat));backdrop-filter:blur(var(--blur)) saturate(var(--sat));
-border:1px solid var(--line);box-shadow:var(--sh),inset 0 1px 0 var(--hi),inset 0 -1px 0 rgba(255,255,255,.06)}
+border:1px solid var(--line);box-shadow:var(--sh),inset 0 1px 0 var(--hi),inset 0 -1px 0 rgba(255,255,255,.06);
+transform:translateZ(0);will-change:transform}
 
 #nt{position:absolute;opacity:0;pointer-events:none}
 .side{position:fixed;top:0;bottom:0;left:0;width:var(--side);z-index:40;display:flex;flex-direction:column;

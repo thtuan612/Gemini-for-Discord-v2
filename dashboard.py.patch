@@ -1,0 +1,33 @@
+--- a/dashboard.py
++++ b/dashboard.py
+@@
+     resp.headers["X-Content-Type-Options"] = "nosniff"
+     resp.headers["Referrer-Policy"] = "no-referrer"
+     resp.headers["X-Frame-Options"] = "DENY"
++    resp.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+@@
+     limiter: v.LoginLimiter = app["limiter"]
+     if limiter.blocked(ip):
+-        return web.Response(text=v.login_page("Sai quá nhiều lần, thử lại sau 10 phút."),
+-                            content_type="text/html", status=429)
++        return web.Response(
++            text=v.login_page("Sai quá nhiều lần, thử lại sau 10 phút."),
++            content_type="text/html", charset="utf-8", status=429,
++            headers={"Retry-After": "600"},
++        )
+     data = await request.post()
+     given = str(data.get("password", "")).encode()
+-    if not hmac.compare_digest(given, app["password"].encode()):
++    expected = str(app["password"] or "").encode()
++    if not hmac.compare_digest(given, expected):
+@@
+     limiter.reset(ip)
+     token, _ = app["sessions"].create()
+     resp = web.HTTPFound("/")
+-    resp.set_cookie(COOKIE, token, max_age=app["sessions"].ttl, httponly=True, samesite="Strict",
+-                    secure=config.DASHBOARD_SECURE_COOKIE, path="/")
++    resp.set_cookie(
++        COOKIE, token, max_age=app["sessions"].ttl, httponly=True,
++        samesite="Strict", secure=config.DASHBOARD_SECURE_COOKIE, path="/",
++    )
+*** End Patch

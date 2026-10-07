@@ -1274,3 +1274,29 @@ body::after {
 
     letter-spacing: .5px;
 }
+
+
+/* =========================================================
+   KHÔNG CHO CON TRỎ VĂN BẢN / CHỌN CHỮ Ở THÀNH PHẦN ĐIỀU HƯỚNG
+   (log, input, textarea vẫn chọn/sao chép được)
+   ========================================================= */
+
+.side,
+.top,
+.burger,
+nav a,
+button,
+summary,
+.flash {
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
+}
+
+pre,
+input,
+textarea,
+code {
+    -webkit-user-select: text;
+    user-select: text;
+}

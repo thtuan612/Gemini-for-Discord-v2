@@ -33,6 +33,19 @@ def get_css() -> str:
     return _load("css", _STATIC_DIR / "dashboard.css")
 
 
+_bg_cache: dict[str, bytes] = {}
+
+
+def get_bg_image() -> bytes:
+    """Trả về ảnh nền static/bg.jpg (bytes rỗng nếu chưa có)."""
+    if "bg" not in _bg_cache:
+        try:
+            _bg_cache["bg"] = (_STATIC_DIR / "bg.jpg").read_bytes()
+        except FileNotFoundError:
+            _bg_cache["bg"] = b""
+    return _bg_cache["bg"]
+
+
 def get_login_js() -> str:
     """Trả về nội dung static/login.js."""
     return _load("login_js", _STATIC_DIR / "login.js")

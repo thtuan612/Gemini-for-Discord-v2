@@ -72,6 +72,10 @@ Toàn bộ biến môi trường có chú thích trong [`.env.example`](.env.exa
 | `DASHBOARD_ENABLED` | | Đặt `true` để bật web dashboard |
 | `DASHBOARD_PASSWORD` | | Mật khẩu đăng nhập dashboard (nên dài ít nhất 12 ký tự) |
 | `DASHBOARD_SECURE_COOKIE` | | Đặt `true` khi chạy sau reverse proxy HTTPS |
+| `GEMINI_MODEL` | | Model Gemini (mặc định `gemini-3.5-flash-lite`) |
+| `THINKING_LEVEL` | | `minimal` / `low` / `medium` / `high` (để trống = mặc định của model) |
+| `GEMINI_TIMEOUT` | | Timeout mỗi lần gọi Gemini, giây (mặc định 30) |
+| `AUTO_CHAT_COOLDOWN_SECONDS` | | Mỗi người chỉ kích hoạt Auto-Chat 1 lần / N giây (mặc định 3, `0` = tắt) |
 
 System prompt của bot nằm ở [`prompt.txt`](prompt.txt), có thể chỉnh để đổi tính cách và cách trả lời.
 

@@ -150,27 +150,29 @@ class DashboardViewTests(unittest.TestCase):
 
     def test_session_store(self):
         store = dv.SessionStore(ttl=1)
-        token, csrf = store.create()
-        self.assertEqual(store.get(token)["csrf"], csrf)
+        token, session = store.create()
+        self.assertTrue(session.csrf)
+        self.assertIs(store.get(token), session)
         self.assertIsNone(store.get("nope"))
         self.assertIsNone(store.get(None))
         store.delete(token)
         self.assertIsNone(store.get(token))
         token2, _ = store.create()
-        store._sessions[token2]["exp"] = time.time() - 1
+        store._sessions[token2].created_at = time.time() - 10  # quá TTL (1 giây)
         self.assertIsNone(store.get(token2))
 
     def test_login_limiter(self):
-        lim = dv.LoginLimiter(max_fails=3, window=100)
+        lim = dv.LoginLimiter(max_failures=3, block_seconds=100)
         for _ in range(3):
-            self.assertFalse(lim.blocked("1.2.3.4", now=1000))
-            lim.fail("1.2.3.4", now=1000)
-        self.assertTrue(lim.blocked("1.2.3.4", now=1050))
-        self.assertFalse(lim.blocked("1.2.3.4", now=1200))  # hết cửa sổ
-        self.assertFalse(lim.blocked("5.6.7.8", now=1050))
-        lim.fail("5.6.7.8", now=1)
+            self.assertFalse(lim.blocked("1.2.3.4"))
+            lim.fail("1.2.3.4")
+        self.assertTrue(lim.blocked("1.2.3.4"))
+        self.assertFalse(lim.blocked("5.6.7.8"))  # IP khác không bị ảnh hưởng
+        lim._data["1.2.3.4"] = (3, time.time() - 200)  # hết thời gian chặn
+        self.assertFalse(lim.blocked("1.2.3.4"))
+        lim.fail("5.6.7.8")
         lim.reset("5.6.7.8")
-        self.assertFalse(lim.blocked("5.6.7.8", now=2))
+        self.assertFalse(lim.blocked("5.6.7.8"))
 
 
 class DashboardDbTests(unittest.IsolatedAsyncioTestCase):

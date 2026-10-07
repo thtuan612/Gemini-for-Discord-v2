@@ -112,7 +112,28 @@ body {
             60vmax 60vmax at 35% 112%,
             rgba(34, 211, 238, .38),
             transparent 62%
-        );
+        ),
+        linear-gradient(
+            rgba(6, 8, 20, .30),
+            rgba(6, 8, 20, .30)
+        ),
+        url(/bg.jpg);
+
+    background-size:
+        auto,
+        auto,
+        auto,
+        auto,
+        cover;
+
+    background-position:
+        0 0,
+        0 0,
+        0 0,
+        0 0,
+        center;
+
+    background-repeat: no-repeat;
 
     background-attachment: fixed;
 }
@@ -134,7 +155,12 @@ body {
                 60vmax 60vmax at 35% 112%,
                 rgba(34, 211, 238, .20),
                 transparent 62%
-            );
+            ),
+            linear-gradient(
+                rgba(255, 255, 255, .55),
+                rgba(255, 255, 255, .55)
+            ),
+            url(/bg.jpg);
     }
 }
 
@@ -965,7 +991,10 @@ pre {
 
     max-height: 70vh;
 
-    white-space: pre;
+    /* Xuống dòng thay vì cắt/cuộn ngang */
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    word-break: break-word;
 
     margin: .5rem 0;
 }

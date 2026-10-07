@@ -1,24 +1,291 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="vi">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<meta name="theme-color" content="#0a0e1c">
-<meta name="color-scheme" content="dark light">
-<title>Đăng nhập · Gemini Dashboard</title>
-<link rel="stylesheet" href="/dashboard.css?v=4">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="robots" content="noindex, nofollow">
+  <meta name="referrer" content="no-referrer">
+  <meta name="color-scheme" content="light dark">
+  <title>Đăng nhập · Gemini for Discord</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🤖</text></svg>">
+  <style>
+    :root {
+      --bg: #f4f5fb;
+      --card: #ffffff;
+      --text: #1e2030;
+      --muted: #6b7088;
+      --border: #d9dcec;
+      --accent: #5865f2;
+      --accent-hover: #4752c4;
+      --danger-bg: #fdecee;
+      --danger-text: #b4232f;
+      --warn-bg: #fff6e0;
+      --warn-text: #8a5a00;
+      --shadow: 0 10px 40px rgba(30, 32, 48, .12);
+    }
+    @media (prefers-color-scheme: dark) {
+      :root:not([data-theme="light"]) {
+        --bg: #14151f; --card: #1e2030; --text: #eceef8; --muted: #9aa0bd;
+        --border: #34374f; --accent: #6c78ff; --accent-hover: #8790ff;
+        --danger-bg: #3a1b21; --danger-text: #ff8c96;
+        --warn-bg: #3a2f14; --warn-text: #ffd27a;
+        --shadow: 0 10px 40px rgba(0, 0, 0, .5);
+      }
+    }
+    :root[data-theme="dark"] {
+      --bg: #14151f; --card: #1e2030; --text: #eceef8; --muted: #9aa0bd;
+      --border: #34374f; --accent: #6c78ff; --accent-hover: #8790ff;
+      --danger-bg: #3a1b21; --danger-text: #ff8c96;
+      --warn-bg: #3a2f14; --warn-text: #ffd27a;
+      --shadow: 0 10px 40px rgba(0, 0, 0, .5);
+    }
+
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: max(16px, env(safe-area-inset-top)) 16px max(16px, env(safe-area-inset-bottom));
+      transition: background .2s, color .2s;
+    }
+
+    .card {
+      width: 100%;
+      max-width: 400px;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      box-shadow: var(--shadow);
+      padding: 32px 28px 24px;
+    }
+
+    .brand { text-align: center; margin-bottom: 24px; }
+    .logo {
+      width: 64px; height: 64px; margin: 0 auto 12px;
+      display: grid; place-items: center;
+      font-size: 32px; border-radius: 18px;
+      background: linear-gradient(135deg, var(--accent), #8f6bff);
+    }
+    h1 { font-size: 1.35rem; margin: 0 0 4px; }
+    .sub { margin: 0; color: var(--muted); font-size: .92rem; }
+
+    .alert {
+      display: none;
+      margin-bottom: 16px;
+      padding: 10px 12px;
+      border-radius: 10px;
+      font-size: .9rem;
+      line-height: 1.4;
+    }
+    .alert.show { display: block; }
+    .alert.error { background: var(--danger-bg); color: var(--danger-text); }
+    .alert.warn  { background: var(--warn-bg);   color: var(--warn-text); }
+
+    label { display: block; font-size: .88rem; font-weight: 600; margin-bottom: 6px; }
+    .field { position: relative; }
+    input[type="password"], input[type="text"] {
+      width: 100%;
+      padding: 12px 84px 12px 14px;
+      font: inherit;
+      color: var(--text);
+      background: transparent;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      outline: none;
+      transition: border-color .15s, box-shadow .15s;
+    }
+    input:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 25%, transparent);
+    }
+    .toggle {
+      position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
+      border: 0; background: transparent; color: var(--accent);
+      font: inherit; font-size: .85rem; font-weight: 600;
+      padding: 6px 10px; border-radius: 8px; cursor: pointer;
+    }
+    .toggle:hover { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+
+    .hint { min-height: 1.2em; margin: 6px 0 0; font-size: .82rem; color: var(--warn-text); }
+
+    button.submit {
+      width: 100%;
+      margin-top: 16px;
+      padding: 12px;
+      font: inherit; font-weight: 600;
+      color: #fff;
+      background: var(--accent);
+      border: 0; border-radius: 10px;
+      cursor: pointer;
+      display: flex; align-items: center; justify-content: center; gap: 8px;
+      transition: background .15s, opacity .15s;
+    }
+    button.submit:hover { background: var(--accent-hover); }
+    button.submit:disabled { opacity: .7; cursor: progress; }
+    .spinner {
+      display: none; width: 16px; height: 16px;
+      border: 2px solid rgba(255, 255, 255, .45); border-top-color: #fff;
+      border-radius: 50%; animation: spin .7s linear infinite;
+    }
+    button.submit.loading .spinner { display: inline-block; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .footer {
+      display: flex; align-items: center; justify-content: space-between;
+      margin-top: 20px; padding-top: 14px;
+      border-top: 1px solid var(--border);
+      font-size: .8rem; color: var(--muted);
+    }
+    .theme-btn {
+      border: 1px solid var(--border); background: transparent; color: var(--muted);
+      font: inherit; font-size: .8rem; padding: 4px 10px; border-radius: 8px; cursor: pointer;
+    }
+    .theme-btn:hover { color: var(--text); }
+
+    .insecure {
+      margin-top: 14px; font-size: .8rem; color: var(--warn-text);
+      background: var(--warn-bg); border-radius: 10px; padding: 8px 12px; display: none;
+    }
+    .insecure.show { display: block; }
+
+    @media (prefers-reduced-motion: reduce) {
+      * { transition: none !important; animation-duration: 0s !important; }
+    }
+  </style>
 </head>
 <body>
-<div class="wrapper">
-  <div class="login">
-    <h1><span class="logo">🤖</span>Gemini Dashboard</h1>
-    __ERROR__
-    <form method="post" action="/login" class="row">
-      <input type="password" name="password" placeholder="Mật khẩu"
-             autocomplete="current-password" required autofocus>
-      <button>Đăng nhập</button>
+  <main class="card">
+    <header class="brand">
+      <div class="logo" aria-hidden="true">🤖</div>
+      <h1>Gemini for Discord</h1>
+      <p class="sub">Đăng nhập để vào web dashboard</p>
+    </header>
+
+    <!-- Thông báo lỗi: hiện khi URL có ?error=1 (sai mật khẩu), ?error=rate (thử quá nhiều), ?expired=1 (hết phiên) -->
+    <div id="alert" class="alert" role="alert" aria-live="polite"></div>
+
+    <form id="login-form" method="post" action="/login" autocomplete="on">
+      <!-- Ẩn trường username giúp trình quản lý mật khẩu lưu đúng -->
+      <input type="text" name="username" value="dashboard" autocomplete="username" hidden tabindex="-1" aria-hidden="true">
+
+      <label for="password">Mật khẩu</label>
+      <div class="field">
+        <input id="password" name="password" type="password"
+               autocomplete="current-password" required autofocus
+               minlength="1" maxlength="256" spellcheck="false"
+               aria-describedby="caps-hint">
+        <button type="button" class="toggle" id="toggle-pw" aria-controls="password" aria-pressed="false">Hiện</button>
+      </div>
+      <p id="caps-hint" class="hint" aria-live="polite"></p>
+
+      <button type="submit" class="submit" id="submit-btn">
+        <span class="spinner" aria-hidden="true"></span>
+        <span id="submit-label">Đăng nhập</span>
+      </button>
     </form>
-  </div>
-</div>
+
+    <div id="insecure" class="insecure" role="note">
+      ⚠️ Bạn đang truy cập qua HTTP không mã hóa. Mật khẩu có thể bị lộ trên đường truyền.
+      Hãy dùng SSH tunnel hoặc HTTPS.
+    </div>
+
+    <footer class="footer">
+      <span>Tác giả: ThTuan</span>
+      <button type="button" class="theme-btn" id="theme-btn" aria-label="Đổi giao diện sáng/tối">🌓 Giao diện</button>
+    </footer>
+
+    <noscript>
+      <p class="sub" style="margin-top:12px;text-align:center">
+        Trình duyệt tắt JavaScript: bạn vẫn đăng nhập được, nhưng sẽ không có nút hiện mật khẩu.
+      </p>
+    </noscript>
+  </main>
+
+  <script>
+    (function () {
+      var root = document.documentElement;
+
+      // --- Giao diện sáng/tối: nhớ lựa chọn của người dùng ---
+      try {
+        var saved = localStorage.getItem("dash-theme");
+        if (saved === "light" || saved === "dark") root.setAttribute("data-theme", saved);
+      } catch (e) {}
+      document.getElementById("theme-btn").addEventListener("click", function () {
+        var current = root.getAttribute("data-theme") ||
+          (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+        var next = current === "dark" ? "light" : "dark";
+        root.setAttribute("data-theme", next);
+        try { localStorage.setItem("dash-theme", next); } catch (e) {}
+      });
+
+      // --- Thông báo theo tham số URL ---
+      var params = new URLSearchParams(location.search);
+      var alertBox = document.getElementById("alert");
+      function showAlert(type, msg) {
+        alertBox.className = "alert show " + type;
+        alertBox.textContent = msg;
+      }
+      var err = params.get("error");
+      if (err === "rate") showAlert("warn", "Bạn thử sai quá nhiều lần. Vui lòng đợi một lúc rồi thử lại.");
+      else if (err) showAlert("error", "Mật khẩu không đúng. Vui lòng thử lại.");
+      else if (params.get("expired")) showAlert("warn", "Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại.");
+      else if (params.get("logout")) showAlert("warn", "Bạn đã đăng xuất.");
+      // Xóa tham số khỏi thanh địa chỉ để F5 không hiện lại lỗi cũ
+      if (err || params.get("expired") || params.get("logout")) {
+        history.replaceState(null, "", location.pathname);
+      }
+
+      // --- Cảnh báo HTTP không mã hóa (trừ localhost) ---
+      var local = ["localhost", "127.0.0.1", "[::1]"].indexOf(location.hostname) !== -1;
+      if (location.protocol === "http:" && !local) {
+        document.getElementById("insecure").classList.add("show");
+      }
+
+      // --- Hiện/ẩn mật khẩu ---
+      var pw = document.getElementById("password");
+      var toggle = document.getElementById("toggle-pw");
+      toggle.addEventListener("click", function () {
+        var show = pw.type === "password";
+        pw.type = show ? "text" : "password";
+        toggle.textContent = show ? "Ẩn" : "Hiện";
+        toggle.setAttribute("aria-pressed", String(show));
+        pw.focus();
+      });
+
+      // --- Cảnh báo Caps Lock ---
+      var hint = document.getElementById("caps-hint");
+      function checkCaps(e) {
+        if (e.getModifierState) {
+          hint.textContent = e.getModifierState("CapsLock") ? "⚠️ Caps Lock đang bật" : "";
+        }
+      }
+      pw.addEventListener("keydown", checkCaps);
+      pw.addEventListener("keyup", checkCaps);
+      pw.addEventListener("blur", function () { hint.textContent = ""; });
+
+      // --- Trạng thái đang gửi, chặn bấm nhiều lần ---
+      var form = document.getElementById("login-form");
+      var btn = document.getElementById("submit-btn");
+      var label = document.getElementById("submit-label");
+      form.addEventListener("submit", function () {
+        btn.disabled = true;
+        btn.classList.add("loading");
+        label.textContent = "Đang đăng nhập…";
+      });
+      // Quay lại từ bfcache: khôi phục nút
+      window.addEventListener("pageshow", function (e) {
+        if (e.persisted) {
+          btn.disabled = false;
+          btn.classList.remove("loading");
+          label.textContent = "Đăng nhập";
+        }
+      });
+    })();
+  </script>
 </body>
 </html>

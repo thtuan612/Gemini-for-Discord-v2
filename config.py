@@ -1,4 +1,5 @@
 """Cấu hình bot — đọc từ biến môi trường / file .env."""
+
 from __future__ import annotations
 
 import os
@@ -117,7 +118,10 @@ MAX_REMINDER_LENGTH = _int("MAX_REMINDER_LENGTH", 1500)
 REMINDER_RETENTION_DAYS = _int("REMINDER_RETENTION_DAYS", 30)  # xóa reminder đã tắt sau N ngày (0 = giữ mãi)
 
 # --- Database ---
-DB_PATH = os.getenv("DB_PATH", "conversations.db")
+# Đường dẫn tương đối được tính từ thư mục dự án (không phụ thuộc thư mục đang đứng khi chạy
+# `python bot.py`), tránh việc chạy từ nơi khác (systemd, cron...) làm tạo ra một DB trống mới.
+_db_path = os.getenv("DB_PATH", "conversations.db")
+DB_PATH = _db_path if os.path.isabs(_db_path) else str(BASE_DIR / _db_path)
 
 # --- Web dashboard ---
 DASHBOARD_ENABLED = _bool("DASHBOARD_ENABLED", False)
@@ -125,3 +129,6 @@ DASHBOARD_HOST = os.getenv("DASHBOARD_HOST", "127.0.0.1")
 DASHBOARD_PORT = _int("DASHBOARD_PORT", 8080)
 DASHBOARD_PASSWORD = os.getenv("DASHBOARD_PASSWORD", "")
 DASHBOARD_SECURE_COOKIE = _bool("DASHBOARD_SECURE_COOKIE", False)  # bật khi chạy sau HTTPS
+# Chỉ bật khi dashboard nằm sau reverse proxy do mình kiểm soát (nginx, Caddy, Cloudflare Tunnel...):
+# khi đó lấy IP client từ X-Forwarded-For cho rate limit đăng nhập. Không có proxy mà bật → có thể bị giả IP.
+DASHBOARD_TRUST_PROXY = _bool("DASHBOARD_TRUST_PROXY", False)

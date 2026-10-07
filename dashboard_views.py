@@ -33,6 +33,11 @@ def get_css() -> str:
     return _load("css", _STATIC_DIR / "dashboard.css")
 
 
+def get_login_js() -> str:
+    """Trả về nội dung static/login.js."""
+    return _load("login_js", _STATIC_DIR / "login.js")
+
+
 def _render(tpl_name: str, repl: dict[str, str]) -> str:
     tpl = _load(tpl_name, _TEMPLATE_DIR / tpl_name)
     out = tpl
@@ -229,11 +234,16 @@ def layout(
 
 
 def login_page(error: str = "") -> str:
-    err = (
-        f'<div class="flash err">{esc(error)}</div>'
-        if error
-        else ""
-    )
+    if error:
+        err = (
+            '<div id="alert" class="alert show error" '
+            f'role="alert" aria-live="polite">{esc(error)}</div>'
+        )
+    else:
+        err = (
+            '<div id="alert" class="alert" '
+            'role="alert" aria-live="polite"></div>'
+        )
 
     return _render(
         "login.html",

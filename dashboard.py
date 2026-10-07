@@ -931,12 +931,28 @@ async def settings_get(request: web.Request):
             config.MAX_OUTPUT_TOKENS,
         ),
         (
+            "THINKING_LEVEL",
+            config.THINKING_LEVEL,
+        ),
+        (
             "THINKING_BUDGET",
             config.THINKING_BUDGET,
         ),
         (
+            "GEMINI_TEMPERATURE",
+            config.GEMINI_TEMPERATURE,
+        ),
+        (
             "GEMINI_TIMEOUT",
             config.GEMINI_TIMEOUT,
+        ),
+        (
+            "GEMINI_429_RETRY_SECONDS",
+            config.GEMINI_429_RETRY_SECONDS,
+        ),
+        (
+            "AUTO_CHAT_COOLDOWN_SECONDS",
+            config.AUTO_CHAT_COOLDOWN_SECONDS,
         ),
         (
             "GEMINI_CONCURRENCY",

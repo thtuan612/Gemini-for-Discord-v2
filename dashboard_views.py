@@ -3,6 +3,7 @@ from __future__ import annotations
 import html
 import secrets
 import time
+import zlib
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -33,17 +34,36 @@ def get_css() -> str:
     return _load("css", _STATIC_DIR / "dashboard.css")
 
 
-_bg_cache: dict[str, bytes] = {}
+_bg_cache: dict = {"mtime": None, "data": b"", "ver": "0"}
+
+
+def _refresh_bg() -> None:
+    """Đọc lại static/bg.jpg nếu file đổi (theo thời gian sửa)."""
+    path = _STATIC_DIR / "bg.jpg"
+    try:
+        mtime = path.stat().st_mtime_ns
+    except FileNotFoundError:
+        _bg_cache.update(mtime=None, data=b"", ver="0")
+        return
+    if mtime != _bg_cache["mtime"]:
+        data = path.read_bytes()
+        _bg_cache.update(
+            mtime=mtime,
+            data=data,
+            ver=format(zlib.crc32(data), "x"),
+        )
 
 
 def get_bg_image() -> bytes:
     """Trả về ảnh nền static/bg.jpg (bytes rỗng nếu chưa có)."""
-    if "bg" not in _bg_cache:
-        try:
-            _bg_cache["bg"] = (_STATIC_DIR / "bg.jpg").read_bytes()
-        except FileNotFoundError:
-            _bg_cache["bg"] = b""
-    return _bg_cache["bg"]
+    _refresh_bg()
+    return _bg_cache["data"]
+
+
+def get_bg_version() -> str:
+    """Mã phiên bản của ảnh nền, đổi khi ảnh đổi (dùng để phá cache)."""
+    _refresh_bg()
+    return _bg_cache["ver"]
 
 
 def get_login_js() -> str:

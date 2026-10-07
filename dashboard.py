@@ -301,6 +301,12 @@ async def dashboard_css(request: web.Request) -> web.Response:
             status=404,
         )
 
+    # Gắn mã phiên bản vào URL ảnh nền: đổi bg.jpg là trình duyệt tải lại ngay
+    css = css.replace(
+        "url(/bg.jpg)",
+        f"url(/bg.jpg?v={v.get_bg_version()})",
+    )
+
     return web.Response(
         text=css,
         content_type="text/css",
@@ -323,7 +329,7 @@ async def background_image(request: web.Request) -> web.Response:
         body=data,
         content_type="image/jpeg",
         headers={
-            "Cache-Control": "public, max-age=86400",
+            "Cache-Control": "public, max-age=31536000, immutable",
         },
     )
 

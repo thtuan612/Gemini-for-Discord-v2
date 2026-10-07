@@ -137,7 +137,7 @@ async def security_middleware(request: web.Request, handler):
 def _client_ip(request: web.Request) -> str:
     """IP của client. Sau reverse proxy, request.remote là IP của proxy → mọi người dùng chung
     một bộ đếm rate limit. Khi DASHBOARD_TRUST_PROXY=true thì lấy IP do proxy ghi nhận."""
-    if config.DASHBOARD_TRUST_PROXY:
+    if getattr(config, "DASHBOARD_TRUST_PROXY", False):
         forwarded = request.headers.get("X-Forwarded-For", "")
         if forwarded:
             # Lấy mục ngoài cùng bên phải: đó là IP proxy của mình thấy, phần bên trái do client tự khai.
@@ -344,7 +344,7 @@ async def settings_get(request: web.Request):
         ("MEMBERS_INTENT", config.MEMBERS_INTENT), ("MAX_REMINDERS_PER_USER", config.MAX_REMINDERS_PER_USER),
         ("REMINDER_GRACE_MINUTES", config.REMINDER_GRACE_MINUTES), ("DB_PATH", config.DB_PATH),
         ("DASHBOARD", f"{config.DASHBOARD_HOST}:{config.DASHBOARD_PORT}"),
-        ("DASHBOARD_TRUST_PROXY", config.DASHBOARD_TRUST_PROXY),
+        ("DASHBOARD_TRUST_PROXY", getattr(config, "DASHBOARD_TRUST_PROXY", False)),
     ]
     return _render(request, "Cấu hình (chỉ xem)", v.settings_body(items, config.SYSTEM_PROMPT), "/settings")
 

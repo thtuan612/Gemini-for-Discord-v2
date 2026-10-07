@@ -158,6 +158,9 @@ class GeminiBot(commands.Bot):
             history_purge_loop.start()
 
     async def close(self) -> None:
+        # Dừng các vòng lặp nền trước khi đóng DB để chúng không chạy vào DB đã đóng.
+        reminder_check_loop.cancel()
+        history_purge_loop.cancel()
         if self.dashboard_runner is not None:
             await self.dashboard_runner.cleanup()
         await super().close()
@@ -697,7 +700,11 @@ async def on_message(message: discord.Message):
         return
     if config.ALLOWED_GUILD_IDS and message.guild.id not in config.ALLOWED_GUILD_IDS:
         return
-    is_auto_channel = message.channel.id in auto_chat_channels
+    # Thread nằm trong kênh đã bật Auto-Chat cũng được tính (thread có id riêng, parent_id là kênh cha).
+    parent_id = getattr(message.channel, "parent_id", None)
+    is_auto_channel = message.channel.id in auto_chat_channels or (
+        parent_id is not None and parent_id in auto_chat_channels
+    )
     is_mentioned = bot.user in message.mentions
     if not (is_auto_channel or is_mentioned):
         return

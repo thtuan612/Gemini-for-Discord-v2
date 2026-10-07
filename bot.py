@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import platform
+import time
 from collections import OrderedDict, deque
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
@@ -26,6 +27,7 @@ from utils import (
     format_uptime,
     get_dir_size,
     get_memory_limit_bytes,
+    is_trivial_message,
     next_run_utc,
     parse_hhmm,
     split_message,
@@ -38,6 +40,10 @@ logging.basicConfig(
 log = logging.getLogger("discord-ai-bot")
 if config.DASHBOARD_ENABLED:
     install_log_buffer()
+
+# Bot không dùng voice: tắt cảnh báo PyNaCl/davey trong log.
+discord.VoiceClient.warn_nacl = False
+discord.VoiceClient.warn_dave = False
 
 BOT_START_TIME = datetime.now(timezone.utc)
 NO_MENTIONS = discord.AllowedMentions.none()
@@ -253,6 +259,22 @@ async def user_gate(key: HistoryKey, *, allow_queue: bool):
 # ======================================================================
 # Gemini
 # ======================================================================
+SERVER_CONTEXT_TTL = 300  # giây
+MAX_CONTEXT_ROLES = 15
+_bot_count_cache: dict[int, tuple[float, int]] = {}
+
+
+def _cached_bot_count(guild: discord.Guild) -> int:
+    """Đếm bot trong server, cache 5 phút (tránh duyệt toàn bộ member mỗi tin nhắn)."""
+    now = time.monotonic()
+    hit = _bot_count_cache.get(guild.id)
+    if hit is not None and now - hit[0] < SERVER_CONTEXT_TTL:
+        return hit[1]
+    count = sum(1 for m in guild.members if m.bot)
+    _bot_count_cache[guild.id] = (now, count)
+    return count
+
+
 def build_server_context(member: discord.abc.User | None, guild: discord.Guild | None) -> str:
     if guild is None:
         return ""
@@ -264,22 +286,41 @@ def build_server_context(member: discord.abc.User | None, guild: discord.Guild |
         f"- Tổng số thành viên: {total}",
     ]
     if config.MEMBERS_INTENT and guild.chunked:
-        bot_count = sum(1 for m in guild.members if m.bot)
+        bot_count = _cached_bot_count(guild)
         lines.append(f"- Số bot: {bot_count}")
         lines.append(f"- Số thành viên thật (không tính bot): {total - bot_count}")
     else:
         lines.append("- Số bot / số thành viên thật: chưa có số liệu, đừng tự bịa")
     if isinstance(member, discord.Member):
-        role_names = [r.name for r in member.roles if r.name != "@everyone"]
-        roles_text = ", ".join(role_names) if role_names else "không có role nào ngoài mặc định"
+        roles = sorted(
+            (r for r in member.roles if r.name != "@everyone"),
+            key=lambda r: r.position,
+            reverse=True,
+        )
+        role_names = [r.name for r in roles[:MAX_CONTEXT_ROLES]]
+        if role_names:
+            roles_text = ", ".join(role_names)
+            if len(roles) > len(role_names):
+                roles_text += f" (và {len(roles) - len(role_names)} role khác)"
+        else:
+            roles_text = "không có role nào ngoài mặc định"
         lines.append(f"- Người đang hỏi: {member.display_name}, role hiện có: {roles_text}")
     return "\n".join(lines)
 
 
+async def _read_image(att: discord.Attachment, mime: str) -> types.Part | None:
+    try:
+        data = await att.read()
+        return types.Part.from_bytes(data=data, mime_type=mime)
+    except Exception as e:
+        log.warning("Không đọc được ảnh %s: %s", att.filename, e)
+        return None
+
+
 async def build_image_parts(attachments: list[discord.Attachment]) -> list[types.Part]:
-    parts: list[types.Part] = []
+    candidates: list[tuple[discord.Attachment, str]] = []
     for att in attachments:
-        if len(parts) >= config.MAX_IMAGES:
+        if len(candidates) >= config.MAX_IMAGES:
             break
         mime = (att.content_type or "").split(";")[0].strip().lower()
         if mime not in config.ALLOWED_IMAGE_MIMES:
@@ -287,12 +328,10 @@ async def build_image_parts(attachments: list[discord.Attachment]) -> list[types
         if att.size > config.MAX_IMAGE_BYTES:
             log.info("Bỏ qua ảnh %s: quá lớn (%d bytes)", att.filename, att.size)
             continue
-        try:
-            data = await att.read()
-            parts.append(types.Part.from_bytes(data=data, mime_type=mime))
-        except Exception as e:
-            log.warning("Không đọc được ảnh %s: %s", att.filename, e)
-    return parts
+        candidates.append((att, mime))
+    # Tải các ảnh song song thay vì lần lượt
+    results = await asyncio.gather(*(_read_image(a, m) for a, m in candidates))
+    return [p for p in results if p is not None]
 
 
 def _extract_reply(response) -> tuple[str, bool]:
@@ -308,6 +347,25 @@ def _extract_reply(response) -> tuple[str, bool]:
     except Exception:
         pass
     return text, truncated
+
+
+def _build_thinking_config() -> types.ThinkingConfig | None:
+    """THINKING_LEVEL ưu tiên hơn THINKING_BUDGET (API không cho gửi cả hai)."""
+    if config.THINKING_LEVEL:
+        try:
+            return types.ThinkingConfig(thinking_level=config.THINKING_LEVEL.upper())
+        except Exception:
+            log.warning(
+                "SDK google-genai hiện tại không nhận thinking_level — bỏ qua THINKING_LEVEL, "
+                "hãy nâng cấp google-genai."
+            )
+            return None
+    if config.THINKING_BUDGET is not None:
+        return types.ThinkingConfig(thinking_budget=config.THINKING_BUDGET)
+    return None
+
+
+THINKING_CONFIG = _build_thinking_config()
 
 
 async def ask_gemini(
@@ -338,38 +396,47 @@ async def ask_gemini(
 
     cfg_kwargs: dict = {
         "system_instruction": "\n\n".join(system_parts),
-        "temperature": 0.7,
         "max_output_tokens": config.MAX_OUTPUT_TOKENS,
     }
-    if config.THINKING_BUDGET is not None:
-        cfg_kwargs["thinking_config"] = types.ThinkingConfig(thinking_budget=config.THINKING_BUDGET)
+    # Gemini 3.x: Google khuyến nghị không chỉnh temperature → chỉ gửi khi được cấu hình.
+    if config.GEMINI_TEMPERATURE is not None:
+        cfg_kwargs["temperature"] = config.GEMINI_TEMPERATURE
+    if THINKING_CONFIG is not None:
+        cfg_kwargs["thinking_config"] = THINKING_CONFIG
     gen_config = types.GenerateContentConfig(**cfg_kwargs)
 
     max_attempts = 3
     response = None
-    async with gemini_sem:
-        for attempt in range(1, max_attempts + 1):
-            try:
+    rate_retried = False
+    for attempt in range(1, max_attempts + 1):
+        try:
+            # Chỉ giữ slot trong lúc gọi API; khi chờ retry thì nhả slot cho người khác.
+            async with gemini_sem:
                 response = await asyncio.wait_for(
                     gemini_client.aio.models.generate_content(
                         model=config.GEMINI_MODEL, contents=contents, config=gen_config
                     ),
                     timeout=config.GEMINI_TIMEOUT,
                 )
-                break
-            except ClientError as e:
-                if e.code == 429:
-                    return MSG_RATE_LIMIT
-                log.error("Gemini client error: %s", e)
-                return MSG_API_ERROR
-            except (ServerError, asyncio.TimeoutError) as e:
-                log.warning("Gemini lỗi tạm thời (lần %d/%d): %r", attempt, max_attempts, e)
-                if attempt == max_attempts:
-                    return MSG_OVERLOADED
-                await asyncio.sleep(2 * attempt)
-            except Exception:
-                log.exception("Lỗi không xác định khi gọi Gemini")
-                return MSG_API_ERROR
+            break
+        except ClientError as e:
+            if e.code == 429:
+                if not rate_retried and config.GEMINI_429_RETRY_SECONDS > 0:
+                    rate_retried = True
+                    log.warning("Gemini 429, thử lại sau %ds", config.GEMINI_429_RETRY_SECONDS)
+                    await asyncio.sleep(config.GEMINI_429_RETRY_SECONDS)
+                    continue
+                return MSG_RATE_LIMIT
+            log.error("Gemini client error: %s", e)
+            return MSG_API_ERROR
+        except (ServerError, asyncio.TimeoutError) as e:
+            log.warning("Gemini lỗi tạm thời (lần %d/%d): %r", attempt, max_attempts, e)
+            if attempt == max_attempts:
+                return MSG_OVERLOADED
+            await asyncio.sleep(2 * attempt)
+        except Exception:
+            log.exception("Lỗi không xác định khi gọi Gemini")
+            return MSG_API_ERROR
 
     reply, truncated = _extract_reply(response)
     if not reply:
@@ -444,6 +511,13 @@ async def history_purge_loop():
             log.info("Đã xóa %d lịch sử hội thoại quá %d ngày", deleted, config.HISTORY_RETENTION_DAYS)
     except Exception:
         log.exception("Lỗi trong history_purge_loop")
+    if config.REMINDER_RETENTION_DAYS > 0:
+        try:
+            removed = await db.purge_inactive_reminders(config.REMINDER_RETENTION_DAYS)
+            if removed:
+                log.info("Đã xóa %d reminder đã tắt quá %d ngày", removed, config.REMINDER_RETENTION_DAYS)
+        except Exception:
+            log.exception("Lỗi khi dọn reminder đã tắt")
 
 
 async def backfill_reminder_guilds() -> None:
@@ -505,13 +579,43 @@ async def is_message_for_bot(message: discord.Message) -> bool:
     return True
 
 
+_auto_last: dict[tuple[int, int], float] = {}
+
+
+def _auto_chat_on_cooldown(channel_id: int, user_id: int) -> bool:
+    """Giới hạn mỗi người kích hoạt Auto-Chat 1 lần / N giây trong một kênh."""
+    cooldown = config.AUTO_CHAT_COOLDOWN_SECONDS
+    if cooldown <= 0:
+        return False
+    now = time.monotonic()
+    key = (channel_id, user_id)
+    last = _auto_last.get(key)
+    if last is not None and now - last < cooldown:
+        return True
+    _auto_last[key] = now
+    if len(_auto_last) > 2000:  # dọn các mục đã hết hạn
+        for k, t in list(_auto_last.items()):
+            if now - t > cooldown:
+                del _auto_last[k]
+    return False
+
+
 async def process_chat_message(
-    message: discord.Message, content: str, auto_channel: bool = False
+    message: discord.Message,
+    content: str,
+    auto_channel: bool = False,
+    mentioned: bool = False,
 ) -> None:
     if not content and not message.attachments:
         if not auto_channel:
             await message.reply("Bạn muốn hỏi gì nào?", mention_author=False)
         return
+    if auto_channel and not mentioned:
+        # Lọc rẻ trước khi tốn request Gemini: tin chỉ có emoji/link, hoặc gửi dồn dập.
+        if not message.attachments and is_trivial_message(content):
+            return
+        if _auto_chat_on_cooldown(message.channel.id, message.author.id):
+            return
     if auto_channel and not await is_message_for_bot(message):
         return
 
@@ -571,7 +675,9 @@ async def on_message(message: discord.Message):
     content = message.content
     for mention in message.mentions:
         content = content.replace(f"<@{mention.id}>", "").replace(f"<@!{mention.id}>", "")
-    await process_chat_message(message, content.strip(), auto_channel=is_auto_channel)
+    await process_chat_message(
+        message, content.strip(), auto_channel=is_auto_channel, mentioned=is_mentioned
+    )
 
 
 # ======================================================================

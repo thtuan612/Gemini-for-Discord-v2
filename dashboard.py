@@ -134,13 +134,10 @@ async def security_middleware(request: web.Request, handler):
 # ---------------------------------------------------------------- đăng nhập
 # Chỉ bật khi dashboard thật sự nằm sau reverse proxy mình kiểm soát (nginx, Caddy, Cloudflare Tunnel...).
 # Nếu bật mà KHÔNG có proxy, người ngoài có thể giả header X-Forwarded-For để né rate limit.
-TRUST_PROXY = os.getenv("DASHBOARD_TRUST_PROXY", "false").strip().lower() in ("1", "true", "yes", "on")
-
-
 def _client_ip(request: web.Request) -> str:
     """IP của client. Sau reverse proxy, request.remote là IP của proxy → mọi người dùng chung
     một bộ đếm rate limit. Khi DASHBOARD_TRUST_PROXY=true thì lấy IP do proxy ghi nhận."""
-    if TRUST_PROXY:
+    if config.DASHBOARD_TRUST_PROXY:
         forwarded = request.headers.get("X-Forwarded-For", "")
         if forwarded:
             # Lấy mục ngoài cùng bên phải: đó là IP proxy của mình thấy, phần bên trái do client tự khai.
@@ -335,7 +332,9 @@ async def logs_get(request: web.Request):
 async def settings_get(request: web.Request):
     items = [
         ("GEMINI_MODEL", config.GEMINI_MODEL), ("MAX_OUTPUT_TOKENS", config.MAX_OUTPUT_TOKENS),
+        ("THINKING_LEVEL", config.THINKING_LEVEL or "(mặc định model)"),
         ("THINKING_BUDGET", config.THINKING_BUDGET), ("GEMINI_TIMEOUT", config.GEMINI_TIMEOUT),
+        ("AUTO_CHAT_COOLDOWN_SECONDS", config.AUTO_CHAT_COOLDOWN_SECONDS),
         ("GEMINI_CONCURRENCY", config.GEMINI_CONCURRENCY), ("MAX_HISTORY_TURNS", config.MAX_HISTORY_TURNS),
         ("HISTORY_RETENTION_DAYS", config.HISTORY_RETENTION_DAYS), ("MAX_IMAGES", config.MAX_IMAGES),
         ("MAX_IMAGE_MB", config.MAX_IMAGE_BYTES // (1024 * 1024)),
@@ -345,6 +344,7 @@ async def settings_get(request: web.Request):
         ("MEMBERS_INTENT", config.MEMBERS_INTENT), ("MAX_REMINDERS_PER_USER", config.MAX_REMINDERS_PER_USER),
         ("REMINDER_GRACE_MINUTES", config.REMINDER_GRACE_MINUTES), ("DB_PATH", config.DB_PATH),
         ("DASHBOARD", f"{config.DASHBOARD_HOST}:{config.DASHBOARD_PORT}"),
+        ("DASHBOARD_TRUST_PROXY", config.DASHBOARD_TRUST_PROXY),
     ]
     return _render(request, "Cấu hình (chỉ xem)", v.settings_body(items, config.SYSTEM_PROMPT), "/settings")
 

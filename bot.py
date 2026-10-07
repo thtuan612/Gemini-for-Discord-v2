@@ -38,6 +38,7 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 log = logging.getLogger("discord-ai-bot")
+
 if config.DASHBOARD_ENABLED:
     install_log_buffer()
 
@@ -63,7 +64,6 @@ RELEVANCE_INSTRUCTION = (
     "tiếp nối một cuộc trò chuyện riêng giữa 2 người khác mà bạn không liên quan gì). Nếu còn "
     "chút nghi ngờ, ưu tiên trả lời bình thường thay vì skip."
 )
-
 MSG_RATE_LIMIT = "Đang bị giới hạn tốc độ từ Gemini (free tier), thử lại sau vài giây nhé."
 MSG_API_ERROR = "Có lỗi khi gọi Gemini API, thử lại sau nhé."
 MSG_OVERLOADED = "Gemini đang quá tải, thử lại sau 1-2 phút nhé."
@@ -71,6 +71,11 @@ MSG_EMPTY = "Gemini không trả về nội dung, thử hỏi lại theo cách k
 MSG_TRUNCATED = "Câu trả lời bị cắt do hết giới hạn token, thử hỏi ngắn gọn hơn nhé."
 MSG_GENERIC_ERROR = "Có lỗi xảy ra khi xử lý, thử lại sau nhé."
 DEFAULT_IMAGE_PROMPT = "Mô tả/phân tích ảnh này giúp mình."
+
+# Các thông báo lỗi: ở kênh Auto-Chat sẽ KHÔNG gửi ra kênh (tránh spam khi Gemini lỗi/429).
+ERROR_MSGS = frozenset(
+    {MSG_RATE_LIMIT, MSG_API_ERROR, MSG_OVERLOADED, MSG_EMPTY, MSG_TRUNCATED}
+)
 
 
 # ======================================================================
@@ -438,6 +443,10 @@ async def ask_gemini(
             log.exception("Lỗi không xác định khi gọi Gemini")
             return MSG_API_ERROR
 
+    # Hết số lần thử mà vẫn chưa có phản hồi (vd: 429 rơi đúng lần thử cuối).
+    if response is None:
+        return MSG_RATE_LIMIT
+
     reply, truncated = _extract_reply(response)
     if not reply:
         return MSG_TRUNCATED if truncated else MSG_EMPTY
@@ -445,6 +454,11 @@ async def ask_gemini(
         return None
     if truncated:
         reply += " …"
+
+    # Lịch sử đã bị /reset, xóa trên dashboard hoặc purge trong lúc chờ Gemini
+    # → không ghi lại deque cũ (tránh "hồi sinh" lịch sử vừa xóa).
+    if history_cache.get(key) is not history:
+        return reply
 
     history.append(types.Content(role="user", parts=[types.Part(text=user_message)]))
     history.append(types.Content(role="model", parts=[types.Part(text=reply)]))
@@ -466,7 +480,6 @@ async def _fire_reminder(row, now: datetime) -> None:
             log.info("Bỏ qua reminder #%s đã trễ quá hạn", row["id"])
         else:
             text = "⏰ (nhắc trễ) " + text
-
     if should_send:
         channel = bot.get_channel(row["channel_id"])
         if channel is None:
@@ -478,7 +491,6 @@ async def _fire_reminder(row, now: datetime) -> None:
                 log.error("Gửi reminder #%s thất bại: %s", row["id"], e)
                 if e.status >= 500:
                     return  # lỗi phía Discord — để lượt quét sau thử lại
-
     if row["repeat"] == "daily":
         nxt = next_run_utc(row["hour"], row["minute"], after=now)
         await db.advance_reminder(row["id"], nxt.isoformat())
@@ -572,7 +584,6 @@ async def is_message_for_bot(message: discord.Message) -> bool:
         # `resolved` có thể là DeletedReferencedMessage (không có .author)
         if isinstance(ref_msg, discord.Message) and ref_msg.author.id != bot.user.id:
             return False
-
     human_mentions = [m for m in message.mentions if not m.bot]
     if human_mentions and bot.user not in message.mentions:
         return False
@@ -610,14 +621,16 @@ async def process_chat_message(
         if not auto_channel:
             await message.reply("Bạn muốn hỏi gì nào?", mention_author=False)
         return
+
     if auto_channel and not mentioned:
         # Lọc rẻ trước khi tốn request Gemini: tin chỉ có emoji/link, hoặc gửi dồn dập.
         if not message.attachments and is_trivial_message(content):
             return
         if _auto_chat_on_cooldown(message.channel.id, message.author.id):
             return
-    if auto_channel and not await is_message_for_bot(message):
-        return
+        # Chỉ lọc "tin này có phải nói với bot không" khi KHÔNG mention trực tiếp bot.
+        if not await is_message_for_bot(message):
+            return
 
     key: HistoryKey = (message.guild.id, message.author.id)
     try:
@@ -651,6 +664,11 @@ async def process_chat_message(
 
     if reply is None:
         return
+    # Kênh Auto-Chat: im lặng khi Gemini lỗi/429 thay vì spam thông báo lỗi ra kênh.
+    # (Nếu người dùng mention trực tiếp bot thì vẫn báo lỗi như bình thường.)
+    if auto_channel and not mentioned and reply in ERROR_MSGS:
+        return
+
     try:
         chunks = split_message(reply, config.MAX_REPLY_CHARS)
         await message.reply(chunks[0], mention_author=False)
@@ -666,12 +684,10 @@ async def on_message(message: discord.Message):
         return
     if config.ALLOWED_GUILD_IDS and message.guild.id not in config.ALLOWED_GUILD_IDS:
         return
-
     is_auto_channel = message.channel.id in auto_chat_channels
     is_mentioned = bot.user in message.mentions
     if not (is_auto_channel or is_mentioned):
         return
-
     content = message.content
     for mention in message.mentions:
         content = content.replace(f"<@{mention.id}>", "").replace(f"<@!{mention.id}>", "")
@@ -771,6 +787,7 @@ async def remind_command(
     if not isinstance(target, (discord.TextChannel, discord.Thread)):
         await interaction.response.send_message("Kênh này không gửi nhắc được.", ephemeral=True)
         return
+
     user_perms = target.permissions_for(interaction.user)
     if not (user_perms.view_channel and user_perms.send_messages):
         await interaction.response.send_message(
@@ -817,7 +834,6 @@ async def remind_list_command(interaction: discord.Interaction):
     if not rows:
         await interaction.response.send_message("Server này chưa có lịch nhắc nào đang hoạt động.")
         return
-
     lines = []
     for r in rows:
         next_run_vn = datetime.fromisoformat(r["next_run_utc"]).astimezone(config.VN_TZ)
@@ -844,7 +860,6 @@ async def remind_cancel_command(interaction: discord.Interaction, id: int):
     if row is None or not row["active"]:
         await interaction.response.send_message(not_found, ephemeral=True)
         return
-
     guild_id = row["guild_id"] or getattr(
         getattr(bot.get_channel(row["channel_id"]), "guild", None), "id", 0
     )
@@ -852,13 +867,11 @@ async def remind_cancel_command(interaction: discord.Interaction, id: int):
         # Cùng thông báo như "không tồn tại" để không lộ ID của server khác.
         await interaction.response.send_message(not_found, ephemeral=True)
         return
-
     if row["created_by"] != interaction.user.id and not is_privileged(interaction.user):
         await interaction.response.send_message(
             "Chỉ người tạo lịch nhắc hoặc Admin/Owner mới hủy được.", ephemeral=True
         )
         return
-
     await db.deactivate_reminder(id)
     await interaction.response.send_message(f"🗑️ Đã hủy lịch nhắc `#{id}`.")
 
@@ -880,7 +893,6 @@ async def autochat_add_command(
     if not (perms.view_channel and perms.send_messages):
         await interaction.response.send_message("Bot không có quyền xem/gửi tin ở kênh đó.", ephemeral=True)
         return
-
     if await db.add_auto_chat_channel(target.id, interaction.guild_id, interaction.user.id):
         auto_chat_channels.add(target.id)
         await interaction.response.send_message(

@@ -32,6 +32,7 @@ START_TIME = datetime.now(timezone.utc)
 PUBLIC_PATHS = frozenset({
     "/login",
     "/dashboard.css",
+    "/static/login.js",
 })
 
 
@@ -227,7 +228,10 @@ async def security_middleware(request, handler):
             )
 
             if session is None:
-                raise web.HTTPFound("/login")
+                # Có cookie nhưng phiên không còn hợp lệ -> báo hết hạn
+                raise web.HTTPFound(
+                    "/login?expired=1" if session_token else "/login"
+                )
 
             # Session object được gắn vào request.
             request["session"] = session
@@ -241,11 +245,25 @@ async def security_middleware(request, handler):
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["Referrer-Policy"] = "no-referrer"
     response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Permissions-Policy"] = (
+        "camera=(), microphone=(), geolocation=()"
+    )
 
     if request.path == "/dashboard.css":
         response.headers["Content-Security-Policy"] = (
             "default-src 'none'; "
             "style-src 'self'; "
+            "frame-ancestors 'none'; "
+            "base-uri 'none'"
+        )
+    elif request.path == "/login":
+        # Trang đăng nhập cần chạy /static/login.js và favicon dạng data:
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'none'; "
+            "script-src 'self'; "
+            "style-src 'self' 'unsafe-inline'; "
+            "img-src data:; "
+            "form-action 'self'; "
             "frame-ancestors 'none'; "
             "base-uri 'none'"
         )
@@ -290,6 +308,28 @@ async def dashboard_css(request: web.Request) -> web.Response:
     )
 
 
+async def login_js(request: web.Request) -> web.Response:
+    """Phục vụ static/login.js (công khai, dùng cho trang đăng nhập)."""
+
+    js = v.get_login_js()
+
+    if not js:
+        return web.Response(
+            text="/* static/login.js chưa được tạo */",
+            content_type="application/javascript",
+            status=404,
+        )
+
+    return web.Response(
+        text=js,
+        content_type="application/javascript",
+        charset="utf-8",
+        headers={
+            "Cache-Control": "no-store, must-revalidate",
+        },
+    )
+
+
 # ---------------------------------------------------------------------------
 # LOGIN
 # ---------------------------------------------------------------------------
@@ -313,7 +353,9 @@ async def login_post(request: web.Request):
                 "Sai quá nhiều lần, thử lại sau 10 phút."
             ),
             content_type="text/html",
+            charset="utf-8",
             status=429,
+            headers={"Retry-After": "600"},
         )
 
     data = await request.post()
@@ -323,7 +365,7 @@ async def login_post(request: web.Request):
     ).encode()
 
     expected = str(
-        app["password"]
+        app["password"] or ""
     ).encode()
 
     if not hmac.compare_digest(
@@ -342,6 +384,7 @@ async def login_post(request: web.Request):
         return web.Response(
             text=v.login_page("Sai mật khẩu."),
             content_type="text/html",
+            charset="utf-8",
             status=401,
         )
 
@@ -376,7 +419,7 @@ async def logout_post(request: web.Request):
         request.cookies.get(COOKIE)
     )
 
-    response = web.HTTPFound("/login")
+    response = web.HTTPFound("/login?logout=1")
 
     response.del_cookie(
         COOKIE,
@@ -990,6 +1033,10 @@ def create_app(
         web.get(
             "/dashboard.css",
             dashboard_css,
+        ),
+        web.get(
+            "/static/login.js",
+            login_js,
         ),
 
         # Authentication

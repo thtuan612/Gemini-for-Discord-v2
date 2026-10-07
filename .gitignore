@@ -1,0 +1,25 @@
+# Bí mật — TUYỆT ĐỐI không commit
+.env
+.env.*
+!.env.example
+
+# Database dữ liệu thật (SQLite + file WAL)
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
+*.sqlite
+*.sqlite3
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# Editor / hệ điều hành
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

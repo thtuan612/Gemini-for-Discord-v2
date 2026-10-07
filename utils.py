@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import re
 from datetime import datetime, timedelta, timezone
 
 import psutil
@@ -97,3 +98,16 @@ def get_memory_limit_bytes() -> int:
         except (FileNotFoundError, ValueError, PermissionError):
             continue
     return host_total
+
+
+_URL_RE = re.compile(r"https?://\S+")
+_DISCORD_TOKEN_RE = re.compile(r"<(?:a?:\w+:|[@#&!]{1,2})\d+>")
+
+
+def is_trivial_message(text: str) -> bool:
+    """True nếu tin nhắn không có chữ/số nào (chỉ emoji, link, sticker, ký tự lạ...).
+
+    Dùng để Auto-Chat bỏ qua mà không tốn một request Gemini.
+    """
+    cleaned = _DISCORD_TOKEN_RE.sub("", _URL_RE.sub("", text or ""))
+    return not any(ch.isalnum() for ch in cleaned)

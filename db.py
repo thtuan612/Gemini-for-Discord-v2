@@ -222,6 +222,14 @@ class Database:
         )
         return row[0]
 
+    async def purge_inactive_reminders(self, days: int) -> int:
+        """Xóa reminder đã tắt (xong/hủy) có giờ chạy cũ hơn N ngày."""
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        rowcount, _ = await self._q(
+            "DELETE FROM reminders WHERE active = 0 AND next_run_utc < ?", (cutoff,)
+        )
+        return rowcount
+
     async def count_active_reminders_total(self) -> int:
         row = await self._q("SELECT COUNT(*) FROM reminders WHERE active = 1", mode="one")
         return row[0]

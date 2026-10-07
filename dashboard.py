@@ -78,7 +78,7 @@ async def _form(request: web.Request) -> dict:
     data = await request.post()
     given = str(data.get("csrf", ""))
     # So sánh dạng bytes: compare_digest với str chứa ký tự non-ASCII sẽ ném TypeError (→ lỗi 500).
-    if not hmac.compare_digest(given.encode("utf-8"), request["session"]["csrf"].encode("utf-8")):
+    if not hmac.compare_digest(given.encode("utf-8"), request["session"].csrf.encode("utf-8")):
         raise web.HTTPForbidden(text="CSRF token không hợp lệ")
     return {k: str(val) for k, val in data.items() if k != "csrf"}
 
@@ -94,7 +94,7 @@ def _int(form: dict, key: str, lo: int = 0, hi: int = 2**63 - 1) -> int:
 
 
 def _render(request: web.Request, title: str, body: str, active: str) -> web.Response:
-    page = v.layout(title=title, body=body, csrf=request["session"]["csrf"], active=active, msg=_msg(request))
+    page = v.layout(title=title, body=body, csrf=request["session"].csrf, active=active, msg=_msg(request))
     return web.Response(text=page, content_type="text/html")
 
 
@@ -232,7 +232,7 @@ async def reminders_get(request: web.Request):
             "hhmm": f"{r['hour']:02d}:{r['minute']:02d}", "next_run": nxt.strftime("%H:%M %d/%m/%Y"),
             "creator": r["created_by"], "message": msg,
         })
-    return _render(request, "Reminder", v.reminders_body(rows, request["session"]["csrf"]), "/reminders")
+    return _render(request, "Reminder", v.reminders_body(rows, request["session"].csrf), "/reminders")
 
 
 async def reminders_cancel(request: web.Request):
@@ -259,7 +259,7 @@ async def autochat_get(request: web.Request):
                   and ch.id not in ctx.auto_chat_channels]
         if usable:
             choices.append((g.name, usable))
-    return _render(request, "Auto-Chat", v.autochat_body(entries, choices, request["session"]["csrf"]), "/autochat")
+    return _render(request, "Auto-Chat", v.autochat_body(entries, choices, request["session"].csrf), "/autochat")
 
 
 async def autochat_add(request: web.Request):
@@ -287,7 +287,7 @@ async def autochat_remove(request: web.Request):
 async def history_get(request: web.Request):
     ctx: Ctx = request.app["ctx"]
     body = v.history_body(await ctx.db.count_history(), len(ctx.history_cache),
-                          config.HISTORY_RETENTION_DAYS, request["session"]["csrf"])
+                          config.HISTORY_RETENTION_DAYS, request["session"].csrf)
     return _render(request, "Lịch sử hội thoại", body, "/history")
 
 

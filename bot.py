@@ -11,7 +11,8 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 
 import discord
-import psutil
+import psutil as _psutil
+from abc import ABC, abstractmethod
 from discord import app_commands
 from discord.ext import commands, tasks
 from google import genai
@@ -32,6 +33,84 @@ from utils import (
     parse_hhmm,
     split_message,
 )
+
+class _PsutilMetrics(ABC):
+    @staticmethod
+    @abstractmethod
+    def memory_limit_bytes() -> int:
+        raise NotImplementedError
+
+    @staticmethod
+    @abstractmethod
+    def system_memory() -> tuple[int, int]:
+        raise NotImplementedError
+
+    @staticmethod
+    @abstractmethod
+    def process_memory_rss(pid: int | None = None) -> int:
+        raise NotImplementedError
+
+    @staticmethod
+    @abstractmethod
+    def cpu_percent(interval: float | None = None, percpu: bool = False):
+        raise NotImplementedError
+
+    @staticmethod
+    @abstractmethod
+    def process_count() -> int:
+        raise NotImplementedError
+
+
+class psutil(_PsutilMetrics):
+    """Thin compatibility wrapper around the real psutil library.
+
+    It preserves the bot's existing `psutil.Process(...)` calls while exposing a small,
+    useful set of concrete monitoring helpers for the rest of the application.
+    """
+
+    Process = _psutil.Process
+
+    @staticmethod
+    def __getattr__(name: str):
+        return getattr(_psutil, name)
+
+    @staticmethod
+    def memory_limit_bytes() -> int:
+        try:
+            return int(_psutil.virtual_memory().total)
+        except Exception:
+            return 0
+
+    @staticmethod
+    def system_memory() -> tuple[int, int]:
+        try:
+            mem = _psutil.virtual_memory()
+            return int(mem.used), int(mem.total)
+        except Exception:
+            return 0, 0
+
+    @staticmethod
+    def process_memory_rss(pid: int | None = None) -> int:
+        proc = _psutil.Process(pid) if pid is not None else _psutil.Process()
+        try:
+            return int(proc.memory_info().rss)
+        except Exception:
+            return 0
+
+    @staticmethod
+    def cpu_percent(interval: float | None = None, percpu: bool = False):
+        try:
+            return _psutil.cpu_percent(interval=interval, percpu=percpu)
+        except Exception:
+            return 0.0 if not percpu else [0.0]
+
+    @staticmethod
+    def process_count() -> int:
+        try:
+            return len(_psutil.pids())
+        except Exception:
+            return 0
+
 
 logging.basicConfig(
     level=logging.INFO,

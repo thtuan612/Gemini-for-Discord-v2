@@ -33,6 +33,7 @@ PUBLIC_PATHS = frozenset({
     "/login",
     "/dashboard.css",
     "/static/login.js",
+    "/bg.jpg",
 })
 
 
@@ -241,7 +242,8 @@ async def security_middleware(request, handler):
     except web.HTTPException as ex:
         response = ex
 
-    response.headers["Cache-Control"] = "no-store"
+    # Handler nào tự đặt Cache-Control (vd. ảnh nền) thì giữ nguyên
+    response.headers.setdefault("Cache-Control", "no-store")
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["Referrer-Policy"] = "no-referrer"
     response.headers["X-Frame-Options"] = "DENY"
@@ -262,7 +264,7 @@ async def security_middleware(request, handler):
             "default-src 'none'; "
             "script-src 'self'; "
             "style-src 'self' 'unsafe-inline'; "
-            "img-src data:; "
+            "img-src 'self' data:; "
             "form-action 'self'; "
             "frame-ancestors 'none'; "
             "base-uri 'none'"
@@ -271,6 +273,7 @@ async def security_middleware(request, handler):
         response.headers["Content-Security-Policy"] = (
             "default-src 'none'; "
             "style-src 'self' 'unsafe-inline'; "
+            "img-src 'self'; "
             "form-action 'self'; "
             "frame-ancestors 'none'; "
             "base-uri 'none'"
@@ -304,6 +307,23 @@ async def dashboard_css(request: web.Request) -> web.Response:
         charset="utf-8",
         headers={
             "Cache-Control": "no-store, must-revalidate",
+        },
+    )
+
+
+async def background_image(request: web.Request) -> web.Response:
+    """Phục vụ ảnh nền static/bg.jpg (công khai, được cache)."""
+
+    data = v.get_bg_image()
+
+    if not data:
+        raise web.HTTPNotFound()
+
+    return web.Response(
+        body=data,
+        content_type="image/jpeg",
+        headers={
+            "Cache-Control": "public, max-age=86400",
         },
     )
 
@@ -1037,6 +1057,10 @@ def create_app(
         web.get(
             "/static/login.js",
             login_js,
+        ),
+        web.get(
+            "/bg.jpg",
+            background_image,
         ),
 
         # Authentication

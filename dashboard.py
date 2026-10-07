@@ -132,13 +132,34 @@ async def security_middleware(request: web.Request, handler):
 
 
 # ---------------------------------------------------------------- đăng nhập
+# Chỉ bật khi dashboard thật sự nằm sau reverse proxy mình kiểm soát (nginx, Caddy, Cloudflare Tunnel...).
+# Nếu bật mà KHÔNG có proxy, người ngoài có thể giả header X-Forwarded-For để né rate limit.
+TRUST_PROXY = os.getenv("DASHBOARD_TRUST_PROXY", "false").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _client_ip(request: web.Request) -> str:
+    """IP của client. Sau reverse proxy, request.remote là IP của proxy → mọi người dùng chung
+    một bộ đếm rate limit. Khi DASHBOARD_TRUST_PROXY=true thì lấy IP do proxy ghi nhận."""
+    if TRUST_PROXY:
+        forwarded = request.headers.get("X-Forwarded-For", "")
+        if forwarded:
+            # Lấy mục ngoài cùng bên phải: đó là IP proxy của mình thấy, phần bên trái do client tự khai.
+            candidate = forwarded.split(",")[-1].strip()
+            if candidate:
+                return candidate
+        real_ip = request.headers.get("X-Real-IP", "").strip()
+        if real_ip:
+            return real_ip
+    return request.remote or "?"
+
+
 async def login_get(request: web.Request):
     return web.Response(text=v.login_page(), content_type="text/html")
 
 
 async def login_post(request: web.Request):
     app = request.app
-    ip = request.remote or "?"
+    ip = _client_ip(request)
     limiter: v.LoginLimiter = app["limiter"]
     if limiter.blocked(ip):
         return web.Response(text=v.login_page("Sai quá nhiều lần, thử lại sau 10 phút."),

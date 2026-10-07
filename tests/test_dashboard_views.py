@@ -15,7 +15,7 @@ class DashboardViewsTests(unittest.TestCase):
         self.assertIsNone(store.get(token))
 
     def test_login_limiter_blocks_after_five_failures(self):
-        limiter = v.LoginLimiter(max_failures=5, window=60, block_time=60)
+        limiter = v.LoginLimiter(max_failures=5, block_seconds=60)
         for _ in range(5):
             limiter.fail("127.0.0.1")
         self.assertTrue(limiter.blocked("127.0.0.1"))

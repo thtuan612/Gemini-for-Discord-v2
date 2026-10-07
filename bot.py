@@ -280,6 +280,17 @@ def _cached_bot_count(guild: discord.Guild) -> int:
     return count
 
 
+def _clean_for_prompt(text: str, limit: int = 40) -> str:
+    """Làm sạch chuỗi do người dùng kiểm soát (tên server, nickname, role) trước khi đưa vào
+    system instruction: bỏ ký tự điều khiển/xuống dòng, gộp khoảng trắng, cắt ngắn.
+    Tránh việc đặt nickname kiểu "...\\nBỏ qua mọi chỉ dẫn trước đó..." để chèn lệnh vào prompt."""
+    cleaned = "".join(ch if ch.isprintable() else " " for ch in (text or ""))
+    cleaned = " ".join(cleaned.split())
+    if len(cleaned) > limit:
+        cleaned = cleaned[: limit - 1].rstrip() + "…"
+    return cleaned or "(trống)"
+
+
 def build_server_context(member: discord.abc.User | None, guild: discord.Guild | None) -> str:
     if guild is None:
         return ""
@@ -287,7 +298,7 @@ def build_server_context(member: discord.abc.User | None, guild: discord.Guild |
     lines = [
         "Dữ liệu thực tế của server Discord hiện tại — dùng đúng các số liệu này khi được hỏi, "
         "không tự bịa số khác:",
-        f"- Tên server: {guild.name}",
+        f"- Tên server: {_clean_for_prompt(guild.name, 60)}",
         f"- Tổng số thành viên: {total}",
     ]
     if config.MEMBERS_INTENT and guild.chunked:
@@ -302,14 +313,16 @@ def build_server_context(member: discord.abc.User | None, guild: discord.Guild |
             key=lambda r: r.position,
             reverse=True,
         )
-        role_names = [r.name for r in roles[:MAX_CONTEXT_ROLES]]
+        role_names = [_clean_for_prompt(r.name, 30) for r in roles[:MAX_CONTEXT_ROLES]]
         if role_names:
             roles_text = ", ".join(role_names)
             if len(roles) > len(role_names):
                 roles_text += f" (và {len(roles) - len(role_names)} role khác)"
         else:
             roles_text = "không có role nào ngoài mặc định"
-        lines.append(f"- Người đang hỏi: {member.display_name}, role hiện có: {roles_text}")
+        lines.append(
+            f"- Người đang hỏi: {_clean_for_prompt(member.display_name, 40)}, role hiện có: {roles_text}"
+        )
     return "\n".join(lines)
 
 
@@ -834,6 +847,25 @@ async def remind_list_command(interaction: discord.Interaction):
     if not rows:
         await interaction.response.send_message("Server này chưa có lịch nhắc nào đang hoạt động.")
         return
+
+    # Chỉ hiện lịch nhắc ở kênh mà người gọi lệnh xem được (tránh lộ nội dung từ kênh riêng tư).
+    # Admin/Owner thấy tất cả.
+    if not is_privileged(interaction.user):
+        visible = []
+        for r in rows:
+            ch = bot.get_channel(r["channel_id"])
+            if ch is not None and ch.permissions_for(interaction.user).view_channel:
+                visible.append(r)
+        hidden = len(rows) - len(visible)
+        rows = visible
+    else:
+        hidden = 0
+    if not rows:
+        await interaction.response.send_message(
+            "Không có lịch nhắc nào ở các kênh bạn xem được.", ephemeral=True
+        )
+        return
+
     lines = []
     for r in rows:
         next_run_vn = datetime.fromisoformat(r["next_run_utc"]).astimezone(config.VN_TZ)
@@ -846,6 +878,8 @@ async def remind_list_command(interaction: discord.Interaction):
             f"{r['hour']:02d}:{r['minute']:02d} — kế tiếp: {next_run_vn.strftime('%H:%M %d/%m')} "
             f"— bởi <@{r['created_by']}>\n └ {preview}"
         )
+    if hidden:
+        lines.append(f"\n*(Còn {hidden} lịch nhắc ở kênh bạn không xem được.)*")
     chunks = split_message("📋 **Danh sách lịch nhắc:**\n" + "\n".join(lines), config.MAX_REPLY_CHARS)
     await interaction.response.send_message(chunks[0])
     for chunk in chunks[1:]:

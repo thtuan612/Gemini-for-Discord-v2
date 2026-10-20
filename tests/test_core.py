@@ -295,5 +295,131 @@ class ChannelContextTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(await is_message_for_bot(msg))
 
 
+
+
+
+class AskGeminiRetryTests(unittest.IsolatedAsyncioTestCase):
+    """Kiểm tra logic retry / xử lý lỗi của ask_gemini.
+    
+    Patch bot.ClientError và bot.ServerError bằng fake exception class
+    — không đụng đến sys.modules để tránh conflict với test khác.
+    """
+
+    class _ClientError(Exception):
+        def __init__(self, code: int = 400):
+            self.code = code
+            super().__init__(f"ClientError {code}")
+
+    class _ServerError(Exception):
+        def __init__(self, message: str = "server error"):
+            self.message = message
+            super().__init__(message)
+
+    def _make_ok_response(self, text: str = "Xin chào!"):
+        resp = MagicMock()
+        resp.text = text
+        candidate = MagicMock()
+        candidate.finish_reason = MagicMock()
+        candidate.finish_reason.name = "STOP"
+        resp.candidates = [candidate]
+        return resp
+
+    async def asyncSetUp(self):
+        import bot
+        self._orig_client = bot.gemini_client
+
+        # Patch exception classes trong bot module
+        self._patch_ce = unittest.mock.patch("bot.ClientError", self._ClientError)
+        self._patch_se = unittest.mock.patch("bot.ServerError", self._ServerError)
+        self._patch_ce.start()
+        self._patch_se.start()
+
+        # Mock db và history functions để không đụng SQLite thật
+        self._patch_load = unittest.mock.patch(
+            "bot.load_history",
+            new_callable=AsyncMock,
+            return_value=__import__("collections").deque(maxlen=20),
+        )
+        self._patch_save = unittest.mock.patch("bot.save_history", new_callable=AsyncMock)
+        self._patch_load.start()
+        self._patch_save.start()
+
+        self.mock_client = MagicMock()
+        bot.gemini_client = self.mock_client
+
+    async def asyncTearDown(self):
+        import bot
+        bot.gemini_client = self._orig_client
+        self._patch_ce.stop()
+        self._patch_se.stop()
+        self._patch_load.stop()
+        self._patch_save.stop()
+
+    async def test_success_returns_text(self):
+        """Gọi thành công: trả về đúng nội dung."""
+        import bot
+        self.mock_client.aio.models.generate_content = AsyncMock(
+            return_value=self._make_ok_response("Xin chào!")
+        )
+        result = await bot.ask_gemini((1, 100), "hello")
+        self.assertEqual(result, "Xin chào!")
+
+    async def test_429_no_retry_when_disabled(self):
+        """GEMINI_429_RETRY_SECONDS=0: không retry, trả lỗi sau 1 lần."""
+        import bot
+        self.mock_client.aio.models.generate_content = AsyncMock(
+            side_effect=self._ClientError(429)
+        )
+        with unittest.mock.patch("bot.config.GEMINI_429_RETRY_SECONDS", 0):
+            result = await bot.ask_gemini((1, 101), "test")
+        self.assertEqual(result, bot.MSG_RATE_LIMIT)
+        self.assertEqual(self.mock_client.aio.models.generate_content.call_count, 1)
+
+    async def test_429_retries_once_then_gives_up(self):
+        """429 hai lần (retry bật): gọi API đúng 2 lần, trả MSG_RATE_LIMIT."""
+        import bot
+        self.mock_client.aio.models.generate_content = AsyncMock(
+            side_effect=[self._ClientError(429), self._ClientError(429)]
+        )
+        with unittest.mock.patch("bot.config.GEMINI_429_RETRY_SECONDS", 1):
+            with unittest.mock.patch("asyncio.sleep", new_callable=AsyncMock):
+                result = await bot.ask_gemini((1, 102), "test")
+        self.assertEqual(result, bot.MSG_RATE_LIMIT)
+        self.assertEqual(self.mock_client.aio.models.generate_content.call_count, 2)
+
+    async def test_429_then_success(self):
+        """429 lần đầu (retry bật), lần hai thành công → trả kết quả."""
+        import bot
+        ok_resp = self._make_ok_response("Trả lời sau retry")
+        self.mock_client.aio.models.generate_content = AsyncMock(
+            side_effect=[self._ClientError(429), ok_resp]
+        )
+        with unittest.mock.patch("bot.config.GEMINI_429_RETRY_SECONDS", 1):
+            with unittest.mock.patch("asyncio.sleep", new_callable=AsyncMock):
+                result = await bot.ask_gemini((1, 103), "test")
+        self.assertEqual(result, "Trả lời sau retry")
+
+    async def test_server_error_exhausts_retries(self):
+        """Lỗi server liên tục: sau 3 lần thử → trả MSG_OVERLOADED."""
+        import bot
+        self.mock_client.aio.models.generate_content = AsyncMock(
+            side_effect=self._ServerError("overloaded")
+        )
+        with unittest.mock.patch("asyncio.sleep", new_callable=AsyncMock):
+            result = await bot.ask_gemini((1, 104), "test")
+        self.assertEqual(result, bot.MSG_OVERLOADED)
+        self.assertEqual(self.mock_client.aio.models.generate_content.call_count, 3)
+
+    async def test_non_429_client_error_no_retry(self):
+        """Lỗi 400: không retry, trả MSG_API_ERROR ngay."""
+        import bot
+        self.mock_client.aio.models.generate_content = AsyncMock(
+            side_effect=self._ClientError(400)
+        )
+        result = await bot.ask_gemini((1, 105), "test")
+        self.assertEqual(result, bot.MSG_API_ERROR)
+        self.assertEqual(self.mock_client.aio.models.generate_content.call_count, 1)
+
+
 if __name__ == "__main__":
     unittest.main()

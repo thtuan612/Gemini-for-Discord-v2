@@ -196,9 +196,14 @@ async def load_history(key: HistoryKey) -> deque:
 
 
 async def save_history(key: HistoryKey, history: deque) -> None:
-    raw = json.dumps(
-        [{"role": c.role, "text": c.parts[0].text} for c in history], ensure_ascii=False
-    )
+    # Chỉ lưu các turn thuần text (loại bỏ turn có ảnh) — ảnh không serialize được và
+    # khi reload sẽ thiếu context ảnh, nhưng còn hơn để role là MagicMock crash JSON.
+    serializable = [
+        {"role": c.role, "text": c.parts[0].text}
+        for c in history
+        if c.parts and getattr(c.parts[0], "text", None) is not None
+    ]
+    raw = json.dumps(serializable, ensure_ascii=False)
     await db.save_history_raw(*key, raw)
 
 
@@ -222,11 +227,14 @@ _waiting: dict[HistoryKey, int] = {}
 @asynccontextmanager
 async def user_gate(key: HistoryKey, *, allow_queue: bool):
     """Mỗi user chỉ xử lý 1 yêu cầu tại một thời điểm; luôn tự giải phóng khi thoát (kể cả lỗi)."""
+    # Đọc và tăng _waiting trước khi acquire lock — không có await ở đủy nên
+    # không bị interrupt bởi asyncio (single-threaded).
     waiting = _waiting.get(key, 0)
     limit = 1 + MAX_QUEUED_PER_USER if allow_queue else 1
     if waiting >= limit:
         raise Busy
     _waiting[key] = waiting + 1
+    # setdefault an toàn vì không có await — luôn trả về cùng một Lock cho cùng một key.
     lock = _locks.setdefault(key, asyncio.Lock())
     try:
         async with lock:
@@ -234,6 +242,8 @@ async def user_gate(key: HistoryKey, *, allow_queue: bool):
     finally:
         _waiting[key] -= 1
         if _waiting[key] <= 0:
+            # Chỉ dọn khi không còn ai đang chờ — tránh xóa lock mà coroutine khác
+            # đã lấy về biến cục bộ đang chờ acquire.
             _waiting.pop(key, None)
             _locks.pop(key, None)
 
@@ -829,6 +839,8 @@ async def chat_command(
             await interaction.followup.send(MSG_GENERIC_ERROR)
         else:
             await interaction.response.send_message(MSG_GENERIC_ERROR, ephemeral=True)
+        return
+    if reply is None:
         return
     await _send_followup_chunks(interaction, reply)
 

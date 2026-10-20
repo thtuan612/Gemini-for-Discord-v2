@@ -356,6 +356,7 @@ async def ask_gemini(
     *,
     privileged: bool = False,
     server_context: str = "",
+    channel_context: str = "",
     image_parts: list[types.Part] | None = None,
     auto_channel: bool = False,
 ) -> str | None:
@@ -372,6 +373,8 @@ async def ask_gemini(
         system_parts.append(config.PRIVILEGED_NOTE)
     if server_context:
         system_parts.append(server_context)
+    if channel_context:
+        system_parts.append(channel_context)
     if auto_channel:
         # Nằm trong system instruction, KHÔNG lưu vào lịch sử hội thoại.
         system_parts.append(RELEVANCE_INSTRUCTION)
@@ -542,8 +545,114 @@ async def on_ready():
     log.info("Logged in as %s (ID: %s)", bot.user, bot.user.id)
 
 
+async def get_referenced_message(message: discord.Message) -> discord.Message | None:
+    """Lấy tin nhắn được reply/trích dẫn nếu có."""
+    if message.reference is None:
+        return None
+    ref = message.reference.resolved
+    if isinstance(ref, discord.Message):
+        return ref
+    if message.reference.message_id and hasattr(message.channel, "fetch_message"):
+        try:
+            return await message.channel.fetch_message(message.reference.message_id)
+        except (discord.NotFound, discord.HTTPException, Exception):
+            return None
+    return None
+
+
+async def build_channel_context(
+    channel: discord.abc.Messageable | None,
+    *,
+    current_message: discord.Message | None = None,
+    ref_msg: discord.Message | None = None,
+    limit: int = config.CHANNEL_HISTORY_LIMIT,
+) -> str:
+    """Đọc lịch sử các tin nhắn gần nhất trong kênh và tin nhắn trích dẫn (nếu có) để tạo ngữ cảnh."""
+    if channel is None or limit <= 0:
+        return ""
+
+    messages: list[discord.Message] = []
+    if hasattr(channel, "history"):
+        try:
+            before = current_message if current_message is not None else None
+            async for msg in channel.history(limit=limit, before=before):
+                if current_message is not None and msg.id == current_message.id:
+                    continue
+                content = (getattr(msg, "clean_content", None) or getattr(msg, "content", None) or "").strip()
+                attachments = getattr(msg, "attachments", None) or []
+                if not content and not attachments:
+                    continue
+                messages.append(msg)
+        except (discord.Forbidden, discord.HTTPException, Exception) as e:
+            log.warning("Không thể đọc lịch sử tin nhắn kênh %s: %s", getattr(channel, "id", None), e)
+
+    messages.reverse()
+
+    lines: list[str] = []
+
+    if messages:
+        lines.append("Lịch sử các tin nhắn gần nhất trong kênh chat (từ cũ đến mới để bạn nắm ngữ cảnh):")
+        for msg in messages:
+            if bot.user and msg.author.id == bot.user.id:
+                author_name = f"Bot ({bot.user.display_name} - chính bạn)"
+            else:
+                author_name = getattr(msg.author, "display_name", str(msg.author))
+
+            text = (getattr(msg, "clean_content", None) or getattr(msg, "content", None) or "").strip()
+            attachments = getattr(msg, "attachments", None) or []
+            if attachments:
+                att_names = ", ".join(a.filename for a in attachments[:2])
+                att_tag = f"[kèm {len(attachments)} file/ảnh: {att_names}]"
+                text = f"{text} {att_tag}".strip() if text else att_tag
+
+            if len(text) > 300:
+                text = text[:300] + "..."
+
+            reply_tag = ""
+            ref = getattr(msg, "reference", None)
+            if ref and getattr(ref, "message_id", None):
+                reply_tag = " (đang reply)"
+
+            lines.append(f"- {author_name}{reply_tag}: {text}")
+
+    if ref_msg is not None:
+        if bot.user and ref_msg.author.id == bot.user.id:
+            ref_author = f"Bot ({bot.user.display_name} - chính bạn)"
+        else:
+            ref_author = getattr(ref_msg.author, "display_name", str(ref_msg.author))
+
+        ref_text = (getattr(ref_msg, "clean_content", None) or getattr(ref_msg, "content", None) or "").strip()
+        ref_atts = getattr(ref_msg, "attachments", None) or []
+        if ref_atts:
+            att_names = ", ".join(a.filename for a in ref_atts[:2])
+            att_tag = f"[kèm {len(ref_atts)} file/ảnh: {att_names}]"
+            ref_text = f"{ref_text} {att_tag}".strip() if ref_text else att_tag
+
+        if len(ref_text) > 400:
+            ref_text = ref_text[:400] + "..."
+
+        lines.append("\n[Tin nhắn đang được người dùng trực tiếp reply / trích dẫn]:")
+        lines.append(f"- {ref_author}: {ref_text or '[Nội dung trống]'}")
+
+    if not lines:
+        return ""
+
+    lines.append(
+        "\nLƯU Ý VỀ NGỮ CẢNH: Đoạn chat trên là các tin nhắn gần nhất trong kênh để bạn hiểu "
+        "mọi người đang thảo luận vấn đề gì, ai đang hỏi ai, các đại từ 'nó', 'đó', 'họ', 'quán đó'... "
+        "ám chỉ điều gì. Nếu câu hỏi hiện tại tiếp nối cuộc trò chuyện trên, hãy trả lời đúng ngữ cảnh, "
+        "tuyệt đối không trả lời lạc đề, bậy bạ hoặc vô nghĩa. Nếu người dùng hỏi một chủ đề hoàn toàn "
+        "mới, hãy tập trung trả lời chủ đề mới đó."
+    )
+
+    return "\n".join(lines)
+
+
 async def is_message_for_bot(message: discord.Message) -> bool:
     """Lọc nhanh, không tốn API call: loại các trường hợp rõ ràng KHÔNG nói với bot."""
+    if bot.user and bot.user in message.mentions:
+        return True
+
     if message.reference is not None:
         ref_msg = message.reference.resolved
         if ref_msg is None and message.reference.message_id:
@@ -552,11 +661,11 @@ async def is_message_for_bot(message: discord.Message) -> bool:
             except (discord.NotFound, discord.HTTPException):
                 ref_msg = None
         # `resolved` có thể là DeletedReferencedMessage (không có .author)
-        if isinstance(ref_msg, discord.Message) and ref_msg.author.id != bot.user.id:
+        if isinstance(ref_msg, discord.Message) and (not bot.user or ref_msg.author.id != bot.user.id):
             return False
 
     human_mentions = [m for m in message.mentions if not m.bot]
-    if human_mentions and bot.user not in message.mentions:
+    if human_mentions and (not bot.user or bot.user not in message.mentions):
         return False
     return True
 
@@ -588,33 +697,48 @@ async def process_chat_message(
     auto_channel: bool = False,
     mentioned: bool = False,
 ) -> None:
-    if not content and not message.attachments:
+    ref_msg = await get_referenced_message(message)
+
+    if not content and not message.attachments and not ref_msg:
         if not auto_channel:
             await message.reply("Bạn muốn hỏi gì nào?", mention_author=False)
         return
+
     if auto_channel and not mentioned:
         # Lọc rẻ trước khi tốn request Gemini: tin chỉ có emoji/link, hoặc gửi dồn dập.
-        if not message.attachments and is_trivial_message(content):
+        if not message.attachments and (not ref_msg or not getattr(ref_msg, "attachments", None)) and is_trivial_message(content):
             return
         if _auto_chat_on_cooldown(message.channel.id, message.author.id):
             return
-    if auto_channel and not await is_message_for_bot(message):
-        return
+        if not await is_message_for_bot(message):
+            return
 
     key: HistoryKey = (message.guild.id, message.author.id)
     try:
         async with user_gate(key, allow_queue=True):
             image_parts = await build_image_parts(message.attachments)
-            if not content and not image_parts:
-                if not auto_channel:
-                    await message.reply("Mình chỉ đọc được ảnh (png/jpg/webp/heic).", mention_author=False)
-                return
+            if not image_parts and ref_msg and getattr(ref_msg, "attachments", None):
+                image_parts = await build_image_parts(ref_msg.attachments)
+
+            final_content = content
+            if not final_content and not image_parts:
+                if ref_msg and (getattr(ref_msg, "clean_content", None) or getattr(ref_msg, "content", None)):
+                    final_content = "Cho ý kiến hoặc giải thích tin nhắn này giúp mình."
+                else:
+                    if not auto_channel:
+                        await message.reply("Mình chỉ đọc được ảnh (png/jpg/webp/heic).", mention_author=False)
+                    return
+
             async with message.channel.typing():
+                channel_context = await build_channel_context(
+                    message.channel, current_message=message, ref_msg=ref_msg
+                )
                 reply = await ask_gemini(
                     key,
-                    content or DEFAULT_IMAGE_PROMPT,
+                    final_content or DEFAULT_IMAGE_PROMPT,
                     privileged=is_privileged(message.author),
                     server_context=build_server_context(message.author, message.guild),
+                    channel_context=channel_context,
                     image_parts=image_parts,
                     auto_channel=auto_channel,
                 )
@@ -685,11 +809,13 @@ async def chat_command(
         async with user_gate(key, allow_queue=False):
             await interaction.response.defer(thinking=True)
             image_parts = await build_image_parts([image] if image else [])
+            channel_context = await build_channel_context(interaction.channel)
             reply = await ask_gemini(
                 key,
                 message,
                 privileged=is_privileged(interaction.user),
                 server_context=build_server_context(interaction.user, interaction.guild),
+                channel_context=channel_context,
                 image_parts=image_parts,
             )
     except Busy:

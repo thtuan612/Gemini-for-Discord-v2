@@ -92,6 +92,7 @@ GEMINI_429_RETRY_SECONDS = _int("GEMINI_429_RETRY_SECONDS", 3)  # 0 = không th�
 # --- Hội thoại ---
 MAX_HISTORY_TURNS = _int("MAX_HISTORY_TURNS", 10)
 HISTORY_RETENTION_DAYS = _int("HISTORY_RETENTION_DAYS", 30)  # 0 = không tự xóa
+CHANNEL_HISTORY_LIMIT = _int("CHANNEL_HISTORY_LIMIT", 10)  # số tin nhắn kênh gần nhất đọc để hiểu context (0 = tắt)
 MAX_REPLY_CHARS = 1900
 
 # --- Ảnh ---

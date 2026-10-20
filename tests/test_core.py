@@ -157,5 +157,143 @@ class DatabaseExtraTests(unittest.IsolatedAsyncioTestCase):
             await db.close()
 
 
+from unittest.mock import AsyncMock, MagicMock
+
+import discord
+
+# Mock google.genai nếu môi trường test chưa cài
+if "google" not in sys.modules:
+    sys.modules["google"] = MagicMock()
+    sys.modules["google.genai"] = MagicMock()
+    sys.modules["google.genai.types"] = MagicMock()
+    sys.modules["google.genai.errors"] = MagicMock()
+
+from bot import (  # noqa: E402
+    bot,
+    build_channel_context,
+    get_referenced_message,
+    is_message_for_bot,
+)
+
+
+class ChannelContextTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        # Mock bot._connection.user
+        mock_user = MagicMock()
+        mock_user.id = 9999
+        mock_user.display_name = "GeminiBot"
+        bot._connection.user = mock_user
+
+    async def test_build_channel_context_none_or_zero(self):
+        self.assertEqual(await build_channel_context(None), "")
+        channel = MagicMock()
+        self.assertEqual(await build_channel_context(channel, limit=0), "")
+
+    async def test_build_channel_context_formats_messages(self):
+        user1 = MagicMock()
+        user1.id = 111
+        user1.display_name = "UserA"
+
+        user2 = MagicMock()
+        user2.id = 222
+        user2.display_name = "UserB"
+
+        bot_user = MagicMock()
+        bot_user.id = 9999
+        bot_user.display_name = "GeminiBot"
+
+        msg1 = MagicMock()
+        msg1.id = 1
+        msg1.author = user1
+        msg1.clean_content = "Tối nay ăn gì?"
+        msg1.content = "Tối nay ăn gì?"
+        msg1.attachments = []
+        msg1.reference = None
+
+        msg2 = MagicMock()
+        msg2.id = 2
+        msg2.author = user2
+        msg2.clean_content = "Đi ăn phở nhé"
+        msg2.content = "Đi ăn phở nhé"
+        msg2.attachments = []
+        msg2.reference = MagicMock(message_id=1)
+
+        msg3 = MagicMock()
+        msg3.id = 3
+        msg3.author = bot_user
+        msg3.clean_content = "Phở Thìn ngon lắm đó"
+        msg3.content = "Phở Thìn ngon lắm đó"
+        msg3.attachments = []
+        msg3.reference = None
+
+        async def mock_history(limit=10, before=None):
+            # Discord returns newest first: msg3, msg2, msg1
+            for m in [msg3, msg2, msg1]:
+                yield m
+
+        channel = MagicMock()
+        channel.history = mock_history
+
+        result = await build_channel_context(channel, limit=10)
+        self.assertIn("Lịch sử các tin nhắn gần nhất trong kênh chat", result)
+        # Should be ordered chronologically: UserA first, then UserB, then Bot
+        pos1 = result.find("UserA: Tối nay ăn gì?")
+        pos2 = result.find("UserB (đang reply): Đi ăn phở nhé")
+        pos3 = result.find("Bot (GeminiBot - chính bạn): Phở Thìn ngon lắm đó")
+
+        self.assertTrue(pos1 != -1 and pos2 != -1 and pos3 != -1)
+        self.assertTrue(pos1 < pos2 < pos3)
+
+    async def test_build_channel_context_with_ref_msg(self):
+        ref_user = MagicMock()
+        ref_user.id = 555
+        ref_user.display_name = "Sender"
+
+        ref_msg = MagicMock()
+        ref_msg.author = ref_user
+        ref_msg.clean_content = "Đây là đề bài toán"
+        ref_msg.content = "Đây là đề bài toán"
+        ref_msg.attachments = []
+
+        result = await build_channel_context(None, ref_msg=ref_msg, limit=10)
+        # channel is None, but ref_msg is handled if channel is passed or when channel has messages
+        channel = MagicMock()
+
+        async def empty_history(limit=10, before=None):
+            if False:
+                yield None
+
+        channel.history = empty_history
+        result = await build_channel_context(channel, ref_msg=ref_msg, limit=10)
+        self.assertIn("[Tin nhắn đang được người dùng trực tiếp reply / trích dẫn]:", result)
+        self.assertIn("Sender: Đây là đề bài toán", result)
+
+    async def test_get_referenced_message(self):
+        msg_no_ref = MagicMock()
+        msg_no_ref.reference = None
+        self.assertIsNone(await get_referenced_message(msg_no_ref))
+
+        resolved_msg = MagicMock(spec=MagicMock)
+        resolved_msg.id = 123
+        msg_resolved = MagicMock()
+        import discord
+        # We can mock resolved with a discord.Message instance or isinstance check
+        msg_resolved.reference = MagicMock()
+        msg_resolved.reference.resolved = MagicMock(spec=discord.Message)
+        self.assertEqual(await get_referenced_message(msg_resolved), msg_resolved.reference.resolved)
+
+    async def test_is_message_for_bot_mention(self):
+        msg = MagicMock()
+        msg.mentions = [bot.user]
+        msg.reference = MagicMock()
+        # Even if reference author is another human
+        other_human = MagicMock()
+        other_human.id = 8888
+        msg.reference.resolved = MagicMock(spec=discord.Message, author=other_human)
+
+        # Bot is mentioned -> must return True
+        self.assertTrue(await is_message_for_bot(msg))
+
+
 if __name__ == "__main__":
     unittest.main()

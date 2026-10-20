@@ -20,8 +20,6 @@ from google.genai.errors import ClientError, ServerError
 
 import config
 from db import Database
-from dashboard import Ctx as DashboardCtx
-from dashboard import install_log_buffer, start_dashboard
 from utils import (
     format_bytes,
     format_uptime,
@@ -38,8 +36,6 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 log = logging.getLogger("discord-ai-bot")
-if config.DASHBOARD_ENABLED:
-    install_log_buffer()
 
 # Bot không dùng voice: tắt cảnh báo PyNaCl/davey trong log.
 discord.VoiceClient.warn_nacl = False
@@ -125,23 +121,9 @@ def build_activity() -> discord.BaseActivity:
 
 
 class GeminiBot(commands.Bot):
-    dashboard_runner = None
-
     async def setup_hook(self) -> None:
         await db.init()
         auto_chat_channels.update(await db.load_auto_chat_channels())
-        if config.DASHBOARD_ENABLED:
-            try:
-                self.dashboard_runner = await start_dashboard(
-                    DashboardCtx(
-                        bot=self,
-                        db=db,
-                        auto_chat_channels=auto_chat_channels,
-                        history_cache=history_cache,
-                    )
-                )
-            except Exception:
-                log.exception("Không khởi động được dashboard (bot vẫn chạy bình thường)")
         if config.SYNC_ON_START:
             try:
                 synced = await self.tree.sync()
@@ -153,8 +135,6 @@ class GeminiBot(commands.Bot):
             history_purge_loop.start()
 
     async def close(self) -> None:
-        if self.dashboard_runner is not None:
-            await self.dashboard_runner.cleanup()
         await super().close()
         await db.close()
 

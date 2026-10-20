@@ -121,59 +121,7 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
 
 
 
-# ---------------------------------------------------------------- dashboard
-import time  # noqa: E402
-
-import dashboard_views as dv  # noqa: E402
-
-
-class DashboardViewTests(unittest.TestCase):
-    def test_everything_user_controlled_is_escaped(self):
-        evil = '<script>alert(1)</script>"\'&'
-        pages = [
-            dv.reminders_body([{"id": 1, "guild": evil, "channel": evil, "repeat": "daily", "hhmm": "07:00",
-                                "next_run": "x", "creator": evil, "message": evil}], "tok"),
-            dv.autochat_body([{"guild": evil, "channel": evil, "channel_id": 1}], [(evil, [(2, evil)])], "tok"),
-            dv.logs_body([evil]),
-            dv.settings_body([(evil, evil)], evil),
-            dv.layout(title=evil, body="", csrf=evil, active="/", msg=evil),
-            dv.login_page(evil),
-        ]
-        for page in pages:
-            self.assertNotIn("<script>alert(1)</script>", page)
-
-    def test_state_changing_forms_carry_csrf(self):
-        html = dv.reminders_body([{"id": 1, "guild": "g", "channel": "c", "repeat": "once", "hhmm": "01:00",
-                                   "next_run": "x", "creator": 1, "message": "m"}], "CSRF123")
-        self.assertIn('name="csrf" value="CSRF123"', html)
-        self.assertIn('method="post"', html)
-
-    def test_session_store(self):
-        store = dv.SessionStore(ttl=1)
-        token, csrf = store.create()
-        self.assertEqual(store.get(token)["csrf"], csrf)
-        self.assertIsNone(store.get("nope"))
-        self.assertIsNone(store.get(None))
-        store.delete(token)
-        self.assertIsNone(store.get(token))
-        token2, _ = store.create()
-        store._sessions[token2]["exp"] = time.time() - 1
-        self.assertIsNone(store.get(token2))
-
-    def test_login_limiter(self):
-        lim = dv.LoginLimiter(max_fails=3, window=100)
-        for _ in range(3):
-            self.assertFalse(lim.blocked("1.2.3.4", now=1000))
-            lim.fail("1.2.3.4", now=1000)
-        self.assertTrue(lim.blocked("1.2.3.4", now=1050))
-        self.assertFalse(lim.blocked("1.2.3.4", now=1200))  # hết cửa sổ
-        self.assertFalse(lim.blocked("5.6.7.8", now=1050))
-        lim.fail("5.6.7.8", now=1)
-        lim.reset("5.6.7.8")
-        self.assertFalse(lim.blocked("5.6.7.8", now=2))
-
-
-class DashboardDbTests(unittest.IsolatedAsyncioTestCase):
+class DatabaseExtraTests(unittest.IsolatedAsyncioTestCase):
     async def test_admin_queries(self):
         with tempfile.TemporaryDirectory() as tmp:
             db = Database(os.path.join(tmp, "d.db"))

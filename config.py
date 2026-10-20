@@ -2,15 +2,20 @@
 from __future__ import annotations
 
 import os
+from datetime import timedelta, timezone
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
 
 load_dotenv()
 
 BASE_DIR = Path(__file__).resolve().parent
-VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
+
+try:
+    from zoneinfo import ZoneInfo
+    VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
+except Exception:
+    VN_TZ = timezone(timedelta(hours=7), name="Asia/Ho_Chi_Minh")
 
 
 def _int(name: str, default: int) -> int:
@@ -118,10 +123,3 @@ REMINDER_RETENTION_DAYS = _int("REMINDER_RETENTION_DAYS", 30)  # xóa reminder �
 
 # --- Database ---
 DB_PATH = os.getenv("DB_PATH", "conversations.db")
-
-# --- Web dashboard ---
-DASHBOARD_ENABLED = _bool("DASHBOARD_ENABLED", False)
-DASHBOARD_HOST = os.getenv("DASHBOARD_HOST", "127.0.0.1")
-DASHBOARD_PORT = _int("DASHBOARD_PORT", 8080)
-DASHBOARD_PASSWORD = os.getenv("DASHBOARD_PASSWORD", "")
-DASHBOARD_SECURE_COOKIE = _bool("DASHBOARD_SECURE_COOKIE", False)  # bật khi chạy sau HTTPS

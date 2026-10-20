@@ -38,6 +38,12 @@ CREATE TABLE IF NOT EXISTS auto_chat_channels (
     guild_id   INTEGER NOT NULL,
     added_by   INTEGER NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS allowed_guilds (
+    guild_id   INTEGER PRIMARY KEY,
+    added_by   INTEGER NOT NULL,
+    added_at   TEXT    NOT NULL
+);
 """
 
 
@@ -157,6 +163,35 @@ class Database:
 
     async def list_all_auto_chat(self):
         return await self._q("SELECT channel_id, guild_id FROM auto_chat_channels", mode="all")
+
+    # ---------- allowed guilds ----------
+    async def load_allowed_guilds(self) -> list[int]:
+        rows = await self._q("SELECT guild_id FROM allowed_guilds", mode="all")
+        return [r[0] for r in rows]
+
+    async def add_allowed_guild(self, guild_id: int, added_by: int) -> bool:
+        now = datetime.now(timezone.utc).isoformat()
+        rowcount, _ = await self._q(
+            "INSERT OR IGNORE INTO allowed_guilds (guild_id, added_by, added_at) VALUES (?, ?, ?)",
+            (guild_id, added_by, now),
+        )
+        return rowcount > 0
+
+    async def remove_allowed_guild(self, guild_id: int) -> bool:
+        rowcount, _ = await self._q(
+            "DELETE FROM allowed_guilds WHERE guild_id = ?", (guild_id,)
+        )
+        return rowcount > 0
+
+    async def clear_allowed_guilds(self) -> int:
+        rowcount, _ = await self._q("DELETE FROM allowed_guilds")
+        return rowcount
+
+    async def list_allowed_guilds_details(self):
+        return await self._q(
+            "SELECT guild_id, added_by, added_at FROM allowed_guilds ORDER BY added_at DESC",
+            mode="all",
+        )
 
     # ---------- reminders ----------
     async def list_all_active_reminders(self):

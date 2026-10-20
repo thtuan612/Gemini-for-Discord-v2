@@ -91,6 +91,23 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(await self.db.remove_auto_chat_channel(100))
         self.assertFalse(await self.db.remove_auto_chat_channel(100))
 
+    async def test_allowed_guilds(self):
+        self.assertTrue(await self.db.add_allowed_guild(123456, 999))
+        self.assertFalse(await self.db.add_allowed_guild(123456, 999))
+        self.assertEqual(await self.db.load_allowed_guilds(), [123456])
+        details = await self.db.list_allowed_guilds_details()
+        self.assertEqual(len(details), 1)
+        self.assertEqual(details[0]["guild_id"], 123456)
+        self.assertEqual(details[0]["added_by"], 999)
+        self.assertTrue(await self.db.remove_allowed_guild(123456))
+        self.assertFalse(await self.db.remove_allowed_guild(123456))
+        self.assertEqual(await self.db.load_allowed_guilds(), [])
+        await self.db.add_allowed_guild(111, 999)
+        await self.db.add_allowed_guild(222, 999)
+        self.assertEqual(len(await self.db.load_allowed_guilds()), 2)
+        self.assertEqual(await self.db.clear_allowed_guilds(), 2)
+        self.assertEqual(await self.db.load_allowed_guilds(), [])
+
     async def test_concurrent_access(self):
         await asyncio.gather(*(self.db.save_history_raw(1, i, str(i)) for i in range(50)))
         self.assertEqual(await self.db.load_history_raw(1, 49), "49")

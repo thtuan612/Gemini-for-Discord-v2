@@ -555,6 +555,31 @@ async def on_ready():
     log.info("Logged in as %s (ID: %s)", bot.user, bot.user.id)
 
 
+# Cache tin nhắn gần nhất theo channel_id để nạp ngữ cảnh tức thì,
+# đọc trước theo thời gian thực mà không cần gọi API channel.history() của Discord.
+CHANNEL_MESSAGE_CACHE_MAX_CHANNELS = 200
+_channel_message_cache: OrderedDict[int, deque[discord.Message]] = OrderedDict()
+
+
+def record_channel_message(message: discord.Message | None) -> None:
+    """Lưu tin nhắn vào cache RAM theo kênh để nạp ngữ cảnh tức thì (0ms mạng)."""
+    if message is None or not getattr(message, "channel", None) or not hasattr(message.channel, "id"):
+        return
+    chid = message.channel.id
+    dq = _channel_message_cache.get(chid)
+    if dq is None:
+        if len(_channel_message_cache) >= CHANNEL_MESSAGE_CACHE_MAX_CHANNELS:
+            _channel_message_cache.popitem(last=False)
+        dq = deque(maxlen=max(20, config.CHANNEL_HISTORY_LIMIT * 2))
+        _channel_message_cache[chid] = dq
+    else:
+        _channel_message_cache.move_to_end(chid)
+
+    if dq and getattr(dq[-1], "id", None) == getattr(message, "id", None):
+        return
+    dq.append(message)
+
+
 async def get_referenced_message(message: discord.Message) -> discord.Message | None:
     """Lấy tin nhắn được reply/trích dẫn nếu có."""
     if message.reference is None:
@@ -562,9 +587,20 @@ async def get_referenced_message(message: discord.Message) -> discord.Message | 
     ref = message.reference.resolved
     if isinstance(ref, discord.Message):
         return ref
-    if message.reference.message_id and hasattr(message.channel, "fetch_message"):
+    ref_id = message.reference.message_id
+    if not ref_id:
+        return None
+
+    # Tìm trước trong cache RAM của kênh (tức thì, tránh tốn network call)
+    chid = getattr(message.channel, "id", None)
+    if chid and chid in _channel_message_cache:
+        for m in _channel_message_cache[chid]:
+            if getattr(m, "id", None) == ref_id:
+                return m
+
+    if hasattr(message.channel, "fetch_message"):
         try:
-            return await message.channel.fetch_message(message.reference.message_id)
+            return await message.channel.fetch_message(ref_id)
         except (discord.NotFound, discord.HTTPException, Exception):
             return None
     return None
@@ -582,11 +618,28 @@ async def build_channel_context(
         return ""
 
     messages: list[discord.Message] = []
-    if hasattr(channel, "history"):
+    chid = getattr(channel, "id", None)
+    cached = _channel_message_cache.get(chid) if chid else None
+
+    if cached:
+        # Lấy từ cache RAM (nhanh, 0ms network latency)
+        for msg in reversed(cached):
+            if current_message is not None and getattr(msg, "id", None) == getattr(current_message, "id", None):
+                continue
+            content = (getattr(msg, "clean_content", None) or getattr(msg, "content", None) or "").strip()
+            attachments = getattr(msg, "attachments", None) or []
+            if not content and not attachments:
+                continue
+            messages.append(msg)
+            if len(messages) >= limit:
+                break
+        messages.reverse()
+    elif hasattr(channel, "history"):
+        # Fallback khi cache chưa có tin (vd: bot vừa khởi động)
         try:
             before = current_message if current_message is not None else None
             async for msg in channel.history(limit=limit, before=before):
-                if current_message is not None and msg.id == current_message.id:
+                if current_message is not None and getattr(msg, "id", None) == getattr(current_message, "id", None):
                     continue
                 content = (getattr(msg, "clean_content", None) or getattr(msg, "content", None) or "").strip()
                 attachments = getattr(msg, "attachments", None) or []
@@ -595,8 +648,9 @@ async def build_channel_context(
                 messages.append(msg)
         except (discord.Forbidden, discord.HTTPException, Exception) as e:
             log.warning("Không thể đọc lịch sử tin nhắn kênh %s: %s", getattr(channel, "id", None), e)
-
-    messages.reverse()
+        messages.reverse()
+        for m in messages:
+            record_channel_message(m)
 
     lines: list[str] = []
 
@@ -769,9 +823,11 @@ async def process_chat_message(
         return
     try:
         chunks = split_message(reply, config.MAX_REPLY_CHARS)
-        await message.reply(chunks[0], mention_author=False)
+        first_reply = await message.reply(chunks[0], mention_author=False)
+        record_channel_message(first_reply)
         for chunk in chunks[1:]:
-            await message.channel.send(chunk)
+            extra_reply = await message.channel.send(chunk)
+            record_channel_message(extra_reply)
     except discord.HTTPException as e:
         log.error("Gửi trả lời thất bại: %s", e)
 
@@ -782,6 +838,9 @@ async def on_message(message: discord.Message):
         return
     if allowed_guild_ids and message.guild.id not in allowed_guild_ids:
         return
+
+    # Luôn ghi nhận tin nhắn vào cache RAM theo thời gian thực (đọc chat trước)
+    record_channel_message(message)
 
     is_auto_channel = message.channel.id in auto_chat_channels
     is_mentioned = bot.user in message.mentions

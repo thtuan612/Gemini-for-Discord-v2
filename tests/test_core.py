@@ -169,15 +169,18 @@ if "google" not in sys.modules:
     sys.modules["google.genai.errors"] = MagicMock()
 
 from bot import (  # noqa: E402
+    _channel_message_cache,
     bot,
     build_channel_context,
     get_referenced_message,
     is_message_for_bot,
+    record_channel_message,
 )
 
 
 class ChannelContextTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
+        _channel_message_cache.clear()
         # Mock bot._connection.user
         mock_user = MagicMock()
         mock_user.id = 9999
@@ -281,6 +284,63 @@ class ChannelContextTests(unittest.IsolatedAsyncioTestCase):
         msg_resolved.reference = MagicMock()
         msg_resolved.reference.resolved = MagicMock(spec=discord.Message)
         self.assertEqual(await get_referenced_message(msg_resolved), msg_resolved.reference.resolved)
+
+    async def test_record_channel_message_and_cached_context(self):
+        channel = MagicMock()
+        channel.id = 456
+        # channel.history should NOT be called when cache is populated
+        channel.history = MagicMock(side_effect=AssertionError("channel.history was called instead of cache"))
+
+        user = MagicMock()
+        user.id = 10
+        user.display_name = "Alice"
+
+        m1 = MagicMock()
+        m1.id = 101
+        m1.channel = channel
+        m1.author = user
+        m1.clean_content = "Tin nhắn cache 1"
+        m1.content = "Tin nhắn cache 1"
+        m1.attachments = []
+        m1.reference = None
+
+        m2 = MagicMock()
+        m2.id = 102
+        m2.channel = channel
+        m2.author = user
+        m2.clean_content = "Tin nhắn cache 2"
+        m2.content = "Tin nhắn cache 2"
+        m2.attachments = []
+        m2.reference = None
+
+        record_channel_message(m1)
+        record_channel_message(m2)
+
+        context = await build_channel_context(channel, limit=10)
+        self.assertIn("Tin nhắn cache 1", context)
+        self.assertIn("Tin nhắn cache 2", context)
+        channel.history.assert_not_called()
+
+    async def test_get_referenced_message_from_cache(self):
+        channel = MagicMock()
+        channel.id = 789
+        channel.fetch_message = MagicMock(side_effect=AssertionError("fetch_message was called instead of cache"))
+
+        ref_target = MagicMock()
+        ref_target.id = 301
+        ref_target.channel = channel
+
+        record_channel_message(ref_target)
+
+        msg = MagicMock()
+        msg.channel = channel
+        msg.reference = MagicMock()
+        msg.reference.resolved = None
+        msg.reference.message_id = 301
+
+        found = await get_referenced_message(msg)
+        self.assertEqual(found, ref_target)
+        channel.fetch_message.assert_not_called()
 
     async def test_is_message_for_bot_mention(self):
         msg = MagicMock()

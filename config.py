@@ -78,9 +78,11 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 # --- Gemini ---
 GEMINI_ENABLED = _bool("GEMINI_ENABLED", True)
 # Model chính + các model dự phòng (thử lần lượt khi model trước bị quota / rate limit / lỗi tạm thời).
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
-GEMINI_FALLBACK_MODELS = _csv("GEMINI_FALLBACK_MODELS")
-GEMINI_MODELS = [GEMINI_MODEL, *(m for m in GEMINI_FALLBACK_MODELS if m != GEMINI_MODEL)]
+# GEMINI_MODEL cũng nhận danh sách cách nhau bằng dấu phẩy: model đầu là chính, phần còn lại là dự phòng.
+_gemini_main = _csv("GEMINI_MODEL")
+GEMINI_MODEL = _gemini_main[0] if _gemini_main else "gemini-3.5-flash-lite"
+GEMINI_FALLBACK_MODELS = [*_gemini_main[1:], *_csv("GEMINI_FALLBACK_MODELS")]
+GEMINI_MODELS = list(dict.fromkeys([GEMINI_MODEL, *GEMINI_FALLBACK_MODELS]))
 SYSTEM_PROMPT = _load_prompt()
 PRIVILEGED_NOTE = os.getenv(
     "PRIVILEGED_NOTE",

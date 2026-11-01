@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import sqlite3
 import threading
 from datetime import datetime, timedelta, timezone
@@ -41,10 +42,16 @@ class Database:
 
     # ---------- nội bộ ----------
     def _init_sync(self) -> None:
+        parent = os.path.dirname(os.path.abspath(self.path))
+        os.makedirs(parent, exist_ok=True)
         conn = sqlite3.connect(self.path, check_same_thread=False, timeout=10)
         conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA busy_timeout=10000")
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA secure_delete=ON")
+        conn.execute("PRAGMA wal_autocheckpoint=1000")
+        conn.execute("PRAGMA journal_size_limit=16777216")
         conn.executescript(SCHEMA)
         # Dọn bảng Reminder cũ nếu DB được nâng cấp từ phiên bản trước.
         # Các bảng dữ liệu khác được giữ nguyên.
@@ -58,15 +65,19 @@ class Database:
         with self._lock:
             if self._conn is None:
                 raise RuntimeError("Database chưa được init()")
-            cur = self._conn.execute(sql, params)
-            if mode == "one":
-                result = cur.fetchone()
-            elif mode == "all":
-                result = cur.fetchall()
-            else:
-                result = (cur.rowcount, cur.lastrowid)
-            self._conn.commit()
-            return result
+            try:
+                cur = self._conn.execute(sql, params)
+                if mode == "one":
+                    result = cur.fetchone()
+                elif mode == "all":
+                    result = cur.fetchall()
+                else:
+                    result = (cur.rowcount, cur.lastrowid)
+                    self._conn.commit()
+                return result
+            except Exception:
+                self._conn.rollback()
+                raise
 
     async def _q(self, sql: str, params: tuple = (), mode: str = "exec"):
         return await asyncio.to_thread(self._run_sync, sql, params, mode)
@@ -139,10 +150,15 @@ class Database:
         await self._q(
             "DELETE FROM chat_history WHERE guild_id = ? AND user_id = ?", (guild_id, user_id)
         )
+        await self._checkpoint()
 
     async def purge_old_history(self, days: int) -> int:
+        if days <= 0:
+            return 0
         cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
         rowcount, _ = await self._q("DELETE FROM chat_history WHERE updated_at < ?", (cutoff,))
+        if rowcount:
+            await self._checkpoint()
         return rowcount
 
     async def count_history(self) -> int:
@@ -151,6 +167,8 @@ class Database:
 
     async def delete_all_history(self) -> int:
         rowcount, _ = await self._q("DELETE FROM chat_history")
+        if rowcount:
+            await self._checkpoint()
         return rowcount
 
     async def list_all_auto_chat(self):

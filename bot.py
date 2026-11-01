@@ -166,21 +166,31 @@ bot = GeminiBot(
 # ======================================================================
 HistoryKey = tuple[int, int]
 HISTORY_CACHE_MAX = 500
+HISTORY_CACHE_TTL_SECONDS = 300
 history_cache: OrderedDict[HistoryKey, deque] = OrderedDict()
+_history_cache_times: dict[HistoryKey, float] = {}
 
 
 def _cache_get(key: HistoryKey) -> deque | None:
     history = history_cache.get(key)
-    if history is not None:
-        history_cache.move_to_end(key)
+    if history is None:
+        return None
+    cached_at = _history_cache_times.get(key, 0.0)
+    if time.monotonic() - cached_at > HISTORY_CACHE_TTL_SECONDS:
+        history_cache.pop(key, None)
+        _history_cache_times.pop(key, None)
+        return None
+    history_cache.move_to_end(key)
     return history
 
 
 def _cache_put(key: HistoryKey, history: deque) -> None:
     history_cache[key] = history
+    _history_cache_times[key] = time.monotonic()
     history_cache.move_to_end(key)
     while len(history_cache) > HISTORY_CACHE_MAX:
-        history_cache.popitem(last=False)
+        evicted, _ = history_cache.popitem(last=False)
+        _history_cache_times.pop(evicted, None)
 
 
 async def load_history(key: HistoryKey) -> deque:
@@ -191,12 +201,18 @@ async def load_history(key: HistoryKey) -> deque:
     raw = await db.load_history_raw(*key)
     if raw:
         try:
-            for item in json.loads(raw):
-                history.append(
-                    types.Content(role=item["role"], parts=[types.Part(text=item["text"])])
-                )
-        except (json.JSONDecodeError, KeyError, TypeError):
-            log.warning("Lịch sử lỗi format cho %s, bỏ qua", key)
+            items = json.loads(raw)
+            if not isinstance(items, list):
+                raise ValueError("history must be a list")
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                role, text = item.get("role"), item.get("text")
+                if role not in {"user", "model"} or not isinstance(text, str):
+                    continue
+                history.append(types.Content(role=role, parts=[types.Part(text=text)]))
+        except (json.JSONDecodeError, ValueError, TypeError):
+            log.warning("Lịch sử lỗi format, bỏ qua")
             history.clear()
     _cache_put(key, history)
     return history
@@ -215,8 +231,9 @@ async def save_history(key: HistoryKey, history: deque) -> None:
 
 
 async def delete_history(key: HistoryKey) -> None:
-    history_cache.pop(key, None)
     await db.delete_history(*key)
+    history_cache.pop(key, None)
+    _history_cache_times.pop(key, None)
 
 
 # ======================================================================
@@ -601,7 +618,8 @@ async def history_purge_loop():
     try:
         deleted = await db.purge_old_history(config.HISTORY_RETENTION_DAYS)
         if deleted:
-            history_cache.clear()  # mọi thay đổi đã nằm trong DB nên reload là an toàn
+            history_cache.clear()
+            _history_cache_times.clear()
             log.info("Đã xóa %d lịch sử hội thoại quá %d ngày", deleted, config.HISTORY_RETENTION_DAYS)
     except Exception:
         log.exception("Lỗi trong history_purge_loop")
@@ -813,7 +831,13 @@ async def chat_command(
         async with user_gate(key, allow_queue=False):
             await interaction.response.defer(thinking=True)
             image_parts = await build_image_parts([image] if image else [])
-            channel_context = await build_channel_context(interaction.channel)
+            # Slash /chat là phiên hỏi riêng: không gửi tin nhắn gần đây của
+            # thành viên khác sang nhà cung cấp AI trừ khi admin chủ động bật opt-in.
+            channel_context = (
+                await build_channel_context(interaction.channel)
+                if config.CHAT_INCLUDE_CHANNEL_CONTEXT and config.CHANNEL_HISTORY_LIMIT > 0
+                else ""
+            )
             reply = await ask_gemini(
                 key,
                 message,
@@ -841,7 +865,16 @@ async def chat_command(
 
 @bot.tree.command(name="reset", description="Xóa lịch sử hội thoại của bạn với AI (ở server này)")
 async def reset_command(interaction: discord.Interaction):
-    await delete_history((interaction.guild_id, interaction.user.id))
+    key = (interaction.guild_id, interaction.user.id)
+    try:
+        async with user_gate(key, allow_queue=False):
+            await delete_history(key)
+    except Busy:
+        await interaction.response.send_message(
+            "Bạn đang có một lượt chat được xử lý. Hãy dùng /reset lại sau khi lượt đó kết thúc.",
+            ephemeral=True,
+        )
+        return
     await interaction.response.send_message("Đã xóa lịch sử hội thoại của bạn.", ephemeral=True)
 
 

@@ -394,7 +394,8 @@ class FallbackTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(chat.call_args.kwargs["model"], "lr-model")  # model đầu tiên trong danh sách /models
         self.assertEqual(messages[0]["role"], "system")
         self.assertIn(config.PRIVILEGED_NOTE, messages[0]["content"])
-        self.assertEqual(messages[-1], {"role": "user", "content": "hello"})
+        self.assertEqual(messages[-1]["role"], "user")
+        self.assertEqual(json.loads(messages[-1]["content"])["current_user_message"], "hello")
 
     async def test_literouter_gets_history_and_image(self):
         chat = AsyncMock(return_value=("thấy ảnh rồi", False))
@@ -413,7 +414,8 @@ class FallbackTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(messages[1]["content"], "trước đó")
         self.assertEqual(messages[2]["content"], "đã trả lời")
         last = messages[-1]["content"]
-        self.assertEqual(last[0], {"type": "text", "text": "ảnh gì đây"})
+        self.assertEqual(last[0]["type"], "text")
+        self.assertEqual(json.loads(last[0]["text"])["current_user_message"], "ảnh gì đây")
         self.assertTrue(last[1]["image_url"]["url"].startswith("data:image/png;base64,"))
 
     async def test_literouter_429_retries_once_when_last(self):

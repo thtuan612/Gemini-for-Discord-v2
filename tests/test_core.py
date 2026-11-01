@@ -145,6 +145,7 @@ if "google" not in sys.modules:
     sys.modules["google.genai.errors"] = MagicMock()
 
 import bot as bot_module  # noqa: E402
+import botinfo as botinfo_module  # noqa: E402
 
 from bot import (  # noqa: E402
     _channel_message_cache,
@@ -159,16 +160,16 @@ from bot import (  # noqa: E402
 class ChannelContextTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_botinfo_disk_size_is_cached(self):
-        original_cache = bot_module._app_disk_size_cache
-        bot_module._app_disk_size_cache = None
+        original_cache = botinfo_module._app_disk_size_cache
+        botinfo_module._app_disk_size_cache = None
         try:
-            with unittest.mock.patch("bot.time.monotonic", return_value=100.0):
-                with unittest.mock.patch("bot.get_dir_size", return_value=2048) as scan:
+            with unittest.mock.patch("botinfo.time.monotonic", return_value=100.0):
+                with unittest.mock.patch("botinfo.get_dir_size", return_value=2048) as scan:
+                    self.assertEqual(await botinfo_module._get_app_disk_size(), 2048)
                     self.assertEqual(await bot_module._get_app_disk_size(), 2048)
-                    self.assertEqual(await bot_module._get_app_disk_size(), 2048)
-                    scan.assert_called_once_with(bot_module.APP_DIR)
+                    scan.assert_called_once_with(botinfo_module._APP_DIR)
         finally:
-            bot_module._app_disk_size_cache = original_cache
+            botinfo_module._app_disk_size_cache = original_cache
 
     def setUp(self):
         _channel_message_cache.clear()

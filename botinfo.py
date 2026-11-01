@@ -117,7 +117,10 @@ def build_autochat_embed(guild: discord.Guild, notice: str = "") -> discord.Embe
         f"🌐 **Tổng kênh Auto-Chat toàn bot:** {len(auto_chat_channels)}\n\n"
         "📝 **Hướng dẫn:**\n"
         "• Chọn kênh trong menu bên dưới để **Bật** hoặc **Tắt** nhanh auto-chat.\n"
-        "• Hoặc bấm **Bật/Tắt kênh hiện tại** để đổi trạng thái kênh bạn đang gửi lệnh."
+        "• Hoặc bấm **Bật/Tắt kênh hiện tại** để đổi trạng thái kênh bạn đang gửi lệnh.\n\n"
+        "⚠️ **Quyền riêng tư:** Khi bật, nội dung tin nhắn trong kênh và ngữ cảnh cần thiết "
+        "có thể được gửi tới AI provider đang cấu hình để tạo phản hồi. Hãy thông báo cho thành viên "
+        "và chỉ bật ở kênh phù hợp."
     )
     embed = discord.Embed(
         title="📣 Quản Lý Auto-Chat",
@@ -187,7 +190,10 @@ class AutoChatChannelSelect(discord.ui.ChannelSelect):
 
             await db.add_auto_chat_channel(cid, interaction.guild_id, interaction.user.id)
             auto_chat_channels.add(cid)
-            notice = f"✅ Đã bật auto-chat tại <#{cid}> — gõ là bot rep."
+            notice = (
+                f"✅ Đã bật auto-chat tại <#{cid}> — gõ là bot rep. "
+                "Tin nhắn trong kênh có thể được gửi tới AI provider để xử lý."
+            )
 
         embed = build_autochat_embed(interaction.guild, notice=notice)
         await interaction.response.edit_message(embed=embed, view=AutoChatManageView(interaction.guild))
@@ -225,7 +231,10 @@ class AutoChatManageView(discord.ui.View):
                     return
             await db.add_auto_chat_channel(cid, interaction.guild_id, interaction.user.id)
             auto_chat_channels.add(cid)
-            notice = f"✅ Đã bật auto-chat tại <#{cid}> — gõ là bot rep."
+            notice = (
+                f"✅ Đã bật auto-chat tại <#{cid}> — gõ là bot rep. "
+                "Tin nhắn trong kênh có thể được gửi tới AI provider để xử lý."
+            )
 
         embed = build_autochat_embed(interaction.guild, notice=notice)
         await interaction.response.edit_message(embed=embed, view=self)

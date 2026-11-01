@@ -139,12 +139,6 @@ ADMIN_ROLE_IDS = _int_set("ADMIN_ROLE_IDS")
 # Tùy chọn, mặc định TẮT vì so khớp theo tên role dễ bị giả mạo.
 ADMIN_ROLE_NAMES = _str_set("ADMIN_ROLE_NAMES")
 
-# --- Reminder ---
-REMINDER_GRACE_MINUTES = _int("REMINDER_GRACE_MINUTES", 10)
-MAX_REMINDERS_PER_USER = _int("MAX_REMINDERS_PER_USER", 20)
-MAX_REMINDER_LENGTH = _int("MAX_REMINDER_LENGTH", 1500)
-REMINDER_RETENTION_DAYS = _int("REMINDER_RETENTION_DAYS", 30)  # xóa reminder đã tắt sau N ngày (0 = giữ mãi)
-
 # --- Database ---
 DB_PATH = os.getenv("DB_PATH", "conversations.db")
 

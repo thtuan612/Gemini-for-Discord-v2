@@ -679,7 +679,7 @@ async def get_referenced_message(message: discord.Message) -> discord.Message | 
     if hasattr(message.channel, "fetch_message"):
         try:
             return await message.channel.fetch_message(ref_id)
-        except (discord.NotFound, discord.HTTPException, Exception):
+        except Exception:
             return None
     return None
 
@@ -752,7 +752,7 @@ async def build_channel_context(
                 if not content and not attachments:
                     continue
                 messages.append(msg)
-        except (discord.Forbidden, discord.HTTPException, Exception) as e:
+        except Exception as e:
             log.warning("Không thể đọc lịch sử tin nhắn kênh %s: %s", getattr(channel, "id", None), e)
         messages.reverse()
         for m in messages:
@@ -789,7 +789,7 @@ _REFERENCE_UNSET = object()
 async def is_message_for_bot(
     message: discord.Message,
     *,
-    ref_msg: discord.Message | None | object = _REFERENCE_UNSET,
+    ref_msg: object = _REFERENCE_UNSET,
 ) -> bool:
     """Lọc tin nhắn; có thể nhận reference đã tải để tránh gọi Discord API lần hai."""
     if bot.user and bot.user in message.mentions:

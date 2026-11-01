@@ -85,15 +85,26 @@ Chi tiết đầy đủ các tùy chọn cấu hình trong [`.env.example`](.env
 
 ### Bắt buộc
 - `DISCORD_TOKEN`: Token bí mật của Discord Bot.
-- `GEMINI_API_KEY`: Khóa API Google Gemini.
+- `GEMINI_API_KEY`: Khóa API Google Gemini (bắt buộc khi `GEMINI_ENABLED=true`).
 
 ### Gemini AI
-- `GEMINI_MODEL`: Model Gemini sử dụng (mặc định: `gemini-3.5-flash-lite`).
+- `GEMINI_ENABLED`: Bật/tắt provider Gemini (mặc định: `true`).
+- `GEMINI_MODEL`: Model Gemini chính (mặc định: `gemini-3.5-flash-lite`).
+- `GEMINI_FALLBACK_MODELS`: Các model dự phòng, cách nhau bằng dấu phẩy. Bot thử lần lượt khi model trước gặp quota, 429 hoặc lỗi tạm thời (5xx, timeout).
 - `MAX_OUTPUT_TOKENS`: Giới hạn token đầu ra (mặc định: `1024`).
 - `THINKING_LEVEL`: Mức suy nghĩ của mô hình (`minimal`, `low`, `medium`, `high`, hoặc để trống).
 - `GEMINI_TIMEOUT`: Thời gian chờ tối đa cho mỗi request (giây, mặc định: `30`).
 - `GEMINI_CONCURRENCY`: Số lượng yêu cầu Gemini được xử lý đồng thời (mặc định: `4`).
 - `GEMINI_429_RETRY_SECONDS`: Thời gian chờ tự động thử lại khi chạm giới hạn tần suất (giây, mặc định: `3`).
+
+### Literouter (OpenAI-compatible)
+- `LITEROUTER_ENABLED`: Bật/tắt provider Literouter (mặc định: `false`).
+- `LITEROUTER_API_KEY`: API Key Literouter (chỉ đặt trong `.env`, không ghi vào source).
+- `LITEROUTER_BASE_URL`: Mặc định `https://literouter.fun/api/v1`.
+- `LITEROUTER_MODEL`: Model mặc định. Để trống = dùng model đầu tiên trong danh sách `/models`.
+- `LITEROUTER_MODELS_REFRESH_HOURS`: Chu kỳ làm mới danh sách model (mặc định: `6`). Danh sách được cache ra file (`LITEROUTER_CACHE_PATH`, mặc định cạnh file DB) và dùng lại khi API tạm ngừng.
+- `LITEROUTER_TIMEOUT`: Timeout mỗi request (giây, mặc định: `30`).
+- `AI_PROVIDER_ORDER`: Thứ tự thử provider (mặc định: `gemini,literouter`).
 
 ### Discord & Quản trị
 - `ALLOWED_GUILD_IDS`: Danh sách ID server được phép hoạt động (cách nhau bởi dấu phẩy, để trống = mở tất cả).
@@ -150,6 +161,7 @@ Lệnh `/botinfo` cung cấp giao diện quản trị trực quan với các th�
 .
 ├── bot.py               # Xử lý sự kiện Discord, slash commands, quản lý state và gọi Gemini API
 ├── config.py            # Nạp và chuẩn hóa cấu hình từ biến môi trường (.env)
+├── literouter.py        # Client Literouter (OpenAI-compatible) + danh sách model tự cập nhật/cache
 ├── db.py                # Wrapper SQLite async (WAL mode, migrations, CRUD lịch sử & reminder)
 ├── utils.py             # Các hàm tiện ích: cắt tin nhắn, lọc tin trivial, tính dung lượng, parse giờ
 ├── prompt.txt           # System prompt mặc định định hình phong cách phản hồi của AI
@@ -158,7 +170,8 @@ Lệnh `/botinfo` cung cấp giao diện quản trị trực quan với các th�
 ├── LICENSE.txt          # Giấy phép mã nguồn mở MIT
 └── tests/               # Bộ unit test toàn diện
     ├── __init__.py
-    └── test_core.py     # Test suite: utils, database, channel context và retry logic Gemini
+    ├── test_core.py     # Test suite: utils, database, channel context và retry logic Gemini
+    └── test_providers.py # Test fallback Gemini, client Literouter, cache danh sách model
 ```
 
 ---

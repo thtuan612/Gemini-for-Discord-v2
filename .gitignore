@@ -11,6 +11,10 @@
 *.sqlite
 *.sqlite3
 
+# Cache danh sách model Literouter (sinh lúc chạy)
+literouter_models.json
+literouter_models.json.tmp
+
 # Python
 __pycache__/
 *.py[cod]

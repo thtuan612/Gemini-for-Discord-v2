@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import logging
 import os
@@ -19,6 +20,7 @@ from google.genai import types
 from google.genai.errors import ClientError, ServerError
 
 import config
+import literouter
 from db import Database
 from utils import (
     format_bytes,
@@ -61,10 +63,11 @@ RELEVANCE_INSTRUCTION = (
     "chút nghi ngờ, ưu tiên trả lời bình thường thay vì skip."
 )
 
-MSG_RATE_LIMIT = "Đang bị giới hạn tốc độ từ Gemini (free tier), thử lại sau vài giây nhé."
-MSG_API_ERROR = "Có lỗi khi gọi Gemini API, thử lại sau nhé."
-MSG_OVERLOADED = "Gemini đang quá tải, thử lại sau 1-2 phút nhé."
-MSG_EMPTY = "Gemini không trả về nội dung, thử hỏi lại theo cách khác nhé."
+MSG_RATE_LIMIT = "Đang bị giới hạn tốc độ từ AI, thử lại sau vài giây nhé."
+MSG_API_ERROR = "Có lỗi khi gọi AI API, thử lại sau nhé."
+MSG_OVERLOADED = "AI đang quá tải, thử lại sau 1-2 phút nhé."
+MSG_EMPTY = "AI không trả về nội dung, thử hỏi lại theo cách khác nhé."
+MSG_NO_PROVIDER = "Chưa có nhà cung cấp AI nào sẵn sàng, nhờ admin kiểm tra cấu hình nhé."
 MSG_TRUNCATED = "Câu trả lời bị cắt do hết giới hạn token, thử hỏi ngắn gọn hơn nhé."
 MSG_GENERIC_ERROR = "Có lỗi xảy ra khi xử lý, thử lại sau nhé."
 DEFAULT_IMAGE_PROMPT = "Mô tả/phân tích ảnh này giúp mình."
@@ -135,9 +138,12 @@ class GeminiBot(commands.Bot):
         reminder_check_loop.start()
         if config.HISTORY_RETENTION_DAYS > 0:
             history_purge_loop.start()
+        if literouter.client.available:
+            literouter.client.start()  # nạp cache + làm mới danh sách model định kỳ
 
     async def close(self) -> None:
         await super().close()
+        await literouter.client.stop()
         await db.close()
 
 
@@ -360,6 +366,134 @@ def _build_thinking_config() -> types.ThinkingConfig | None:
 THINKING_CONFIG = _build_thinking_config()
 
 
+class _ProviderFailure(Exception):
+    """Một model/provider thất bại.
+
+    kind: "rate"  = quota / 429
+          "temp"  = lỗi tạm thời (5xx, timeout, mất kết nối)
+          "fatal" = lỗi không nên thử model khác (vd: 400) — trả lỗi ngay
+    """
+
+    def __init__(self, message: str, kind: str):
+        super().__init__(message)
+        self.message = message
+        self.kind = kind
+
+
+def _build_candidates() -> list[tuple[str, str]]:
+    """Danh sách (provider, model) theo thứ tự thử: model chính trước, các model dự phòng sau."""
+    candidates: list[tuple[str, str]] = []
+    for provider in config.AI_PROVIDER_ORDER:
+        if provider == "gemini":
+            if config.GEMINI_ENABLED and gemini_client is not None:
+                candidates.extend(("gemini", m) for m in config.GEMINI_MODELS)
+        elif provider == "literouter":
+            if literouter.client.available:
+                model = literouter.client.resolve_model()
+                if model:
+                    candidates.append(("literouter", model))
+    return candidates
+
+
+def describe_ai_providers() -> str:
+    """Mô tả ngắn các provider/model đang dùng (hiển thị ở /botinfo). Không chứa API key."""
+    parts: list[str] = []
+    for provider in config.AI_PROVIDER_ORDER:
+        if provider == "gemini":
+            if not config.GEMINI_ENABLED:
+                parts.append("Gemini: tắt")
+            else:
+                parts.append("Gemini: " + " → ".join(config.GEMINI_MODELS))
+        elif provider == "literouter":
+            if not config.LITEROUTER_ENABLED:
+                parts.append("Literouter: tắt")
+            elif not config.LITEROUTER_API_KEY:
+                parts.append("Literouter: thiếu API key")
+            else:
+                model = literouter.client.resolve_model() or "chưa có model"
+                parts.append(f"Literouter: {model} ({len(literouter.client.models)} model khả dụng)")
+    return " | ".join(parts)
+
+
+async def _call_gemini(model: str, contents: list, gen_config) -> tuple[str, bool]:
+    try:
+        response = await asyncio.wait_for(
+            gemini_client.aio.models.generate_content(model=model, contents=contents, config=gen_config),
+            timeout=config.GEMINI_TIMEOUT,
+        )
+    except ClientError as e:
+        if e.code == 429:
+            log.warning("Gemini %s: 429 (quota/rate limit)", model)
+            raise _ProviderFailure(MSG_RATE_LIMIT, "rate") from e
+        if e.code == 408:
+            log.warning("Gemini %s: 408 timeout từ phía server", model)
+            raise _ProviderFailure(MSG_OVERLOADED, "temp") from e
+        log.error("Gemini client error (%s): %s", model, e)
+        raise _ProviderFailure(MSG_API_ERROR, "fatal") from e
+    except (ServerError, asyncio.TimeoutError) as e:
+        log.warning("Gemini %s lỗi tạm thời: %r", model, e)
+        raise _ProviderFailure(MSG_OVERLOADED, "temp") from e
+    except Exception as e:
+        log.exception("Lỗi không xác định khi gọi Gemini (%s)", model)
+        raise _ProviderFailure(MSG_API_ERROR, "fatal") from e
+    return _extract_reply(response)
+
+
+async def _call_literouter(
+    model: str,
+    system_text: str,
+    history_pairs: list[tuple[str, str]],
+    user_message: str,
+    images: list[tuple[str, bytes]],
+) -> tuple[str, bool]:
+    messages = literouter.build_messages(system_text, history_pairs, user_message, images)
+    try:
+        return await literouter.client.chat(messages, model=model)
+    except literouter.LiterouterError as e:
+        if e.status == 429:
+            log.warning("Literouter %s: 429 (quota/rate limit)", model)
+            raise _ProviderFailure(MSG_RATE_LIMIT, "rate") from e
+        if e.temporary:
+            log.warning("Literouter %s lỗi tạm thời: %s", model, e)
+            raise _ProviderFailure(MSG_OVERLOADED, "temp") from e
+        log.error("Literouter client error (%s): %s", model, e)
+        raise _ProviderFailure(MSG_API_ERROR, "fatal") from e
+    except Exception as e:
+        log.exception("Lỗi không xác định khi gọi Literouter (%s)", model)
+        raise _ProviderFailure(MSG_API_ERROR, "fatal") from e
+
+
+async def _attempt(call, *, can_fallback: bool) -> tuple[str, bool]:
+    """Gọi một model kèm retry.
+
+    Còn model dự phòng phía sau → không retry/ngủ, thất bại là chuyển model ngay cho nhanh.
+    Là model cuối cùng → giữ logic retry cũ (429 thử lại 1 lần, lỗi tạm thời tối đa 3 lần).
+    """
+    max_attempts = 1 if can_fallback else 3
+    rate_retried = False
+    last: _ProviderFailure | None = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            # Chỉ giữ slot trong lúc gọi API; khi chờ retry thì nhả slot cho người khác.
+            async with gemini_sem:
+                return await call()
+        except _ProviderFailure as e:
+            last = e
+            if e.kind == "rate":
+                if not can_fallback and not rate_retried and config.GEMINI_429_RETRY_SECONDS > 0:
+                    rate_retried = True
+                    log.warning("429, thử lại sau %ds", config.GEMINI_429_RETRY_SECONDS)
+                    await asyncio.sleep(config.GEMINI_429_RETRY_SECONDS)
+                    continue
+                raise
+            if e.kind == "temp" and attempt < max_attempts:
+                log.warning("Lỗi tạm thời (lần %d/%d)", attempt, max_attempts)
+                await asyncio.sleep(2 * attempt)
+                continue
+            raise
+    raise last or _ProviderFailure(MSG_API_ERROR, "fatal")  # chỉ tới đây khi hết lượt sau một lần retry 429
+
+
 async def ask_gemini(
     key: HistoryKey,
     user_message: str,
@@ -370,7 +504,15 @@ async def ask_gemini(
     image_parts: list[types.Part] | None = None,
     auto_channel: bool = False,
 ) -> str | None:
-    """Trả về câu trả lời, hoặc None nếu bot quyết định im lặng (chỉ ở auto-chat)."""
+    """Trả về câu trả lời, hoặc None nếu bot quyết định im lặng (chỉ ở auto-chat).
+
+    Tên hàm giữ nguyên cho tương thích; thực tế thử lần lượt các model/provider đã cấu hình
+    (Gemini chính → Gemini dự phòng → Literouter, theo AI_PROVIDER_ORDER).
+    """
+    candidates = _build_candidates()
+    if not candidates:
+        return MSG_NO_PROVIDER
+
     history = await load_history(key)
     contents = list(history)
     user_parts = [types.Part(text=user_message)]
@@ -389,8 +531,9 @@ async def ask_gemini(
         # Nằm trong system instruction, KHÔNG lưu vào lịch sử hội thoại.
         system_parts.append(RELEVANCE_INSTRUCTION)
 
+    system_text = "\n\n".join(system_parts)
     cfg_kwargs: dict = {
-        "system_instruction": "\n\n".join(system_parts),
+        "system_instruction": system_text,
         "max_output_tokens": config.MAX_OUTPUT_TOKENS,
     }
     # Gemini 3.x: Google khuyến nghị không chỉnh temperature → chỉ gửi khi được cấu hình.
@@ -400,40 +543,41 @@ async def ask_gemini(
         cfg_kwargs["thinking_config"] = THINKING_CONFIG
     gen_config = types.GenerateContentConfig(**cfg_kwargs)
 
-    max_attempts = 3
-    response = None
-    rate_retried = False
-    for attempt in range(1, max_attempts + 1):
-        try:
-            # Chỉ giữ slot trong lúc gọi API; khi chờ retry thì nhả slot cho người khác.
-            async with gemini_sem:
-                response = await asyncio.wait_for(
-                    gemini_client.aio.models.generate_content(
-                        model=config.GEMINI_MODEL, contents=contents, config=gen_config
-                    ),
-                    timeout=config.GEMINI_TIMEOUT,
-                )
-            break
-        except ClientError as e:
-            if e.code == 429:
-                if not rate_retried and config.GEMINI_429_RETRY_SECONDS > 0:
-                    rate_retried = True
-                    log.warning("Gemini 429, thử lại sau %ds", config.GEMINI_429_RETRY_SECONDS)
-                    await asyncio.sleep(config.GEMINI_429_RETRY_SECONDS)
-                    continue
-                return MSG_RATE_LIMIT
-            log.error("Gemini client error: %s", e)
-            return MSG_API_ERROR
-        except (ServerError, asyncio.TimeoutError) as e:
-            log.warning("Gemini lỗi tạm thời (lần %d/%d): %r", attempt, max_attempts, e)
-            if attempt == max_attempts:
-                return MSG_OVERLOADED
-            await asyncio.sleep(2 * attempt)
-        except Exception:
-            log.exception("Lỗi không xác định khi gọi Gemini")
-            return MSG_API_ERROR
+    # Dữ liệu cho Literouter (OpenAI format): lịch sử thuần text + ảnh dạng (mime, bytes).
+    history_pairs = [
+        (c.role, c.parts[0].text) for c in history if c.parts and getattr(c.parts[0], "text", None)
+    ]
+    images = [
+        (p.inline_data.mime_type, p.inline_data.data)
+        for p in (image_parts or [])
+        if getattr(p, "inline_data", None) and getattr(p.inline_data, "data", None)
+    ]
 
-    reply, truncated = _extract_reply(response)
+    reply, truncated = "", False
+    failure = MSG_API_ERROR
+    for idx, (provider, model) in enumerate(candidates):
+        can_fallback = idx < len(candidates) - 1
+        if provider == "gemini":
+            call = functools.partial(_call_gemini, model, contents, gen_config)
+        else:
+            call = functools.partial(
+                _call_literouter, model, system_text, history_pairs, user_message, images
+            )
+        try:
+            reply, truncated = await _attempt(call, can_fallback=can_fallback)
+        except _ProviderFailure as e:
+            failure = e.message
+            if e.kind == "fatal":
+                return failure
+            if can_fallback:
+                log.warning("%s/%s thất bại (%s) — chuyển sang model kế tiếp", provider, model, e.kind)
+            continue
+        if idx > 0:
+            log.info("Đã trả lời bằng model dự phòng %s/%s", provider, model)
+        break
+    else:
+        return failure  # mọi model đều thất bại; trả thông báo của model cuối cùng
+
     if not reply:
         return MSG_TRUNCATED if truncated else MSG_EMPTY
     if auto_channel and SKIP_TOKEN in reply:
@@ -1139,7 +1283,7 @@ async def build_botinfo_embed(guild: discord.Guild | None) -> discord.Embed:
         f"🧮 **Dung lượng DB:** {format_bytes(db_size)}\n"
         f"🐍 **Python:** {platform.python_version()}\n"
         f"📘 **discord.py:** {discord.__version__}\n"
-        f"✨ **Gemini Model:** {config.GEMINI_MODEL}\n"
+        f"✨ **AI:** {describe_ai_providers()}\n"
         f"⏰ **Lịch nhắc đang chạy:** {active_reminders}\n"
         f"📣 **Kênh auto-chat:** {len(auto_chat_channels)} kênh (Server này: {guild_autochat_count})\n"
         f"🛡️ **Giới hạn server:** {allowed_text}\n\n"
@@ -1542,9 +1686,14 @@ def main() -> None:
     global gemini_client
     if not config.DISCORD_TOKEN:
         raise RuntimeError("Thiếu DISCORD_TOKEN trong file .env")
-    if not config.GEMINI_API_KEY:
-        raise RuntimeError("Thiếu GEMINI_API_KEY trong file .env")
-    gemini_client = genai.Client(api_key=config.GEMINI_API_KEY)
+    if config.GEMINI_ENABLED:
+        if not config.GEMINI_API_KEY:
+            raise RuntimeError("Thiếu GEMINI_API_KEY trong file .env (hoặc đặt GEMINI_ENABLED=false)")
+        gemini_client = genai.Client(api_key=config.GEMINI_API_KEY)
+    if config.LITEROUTER_ENABLED and not config.LITEROUTER_API_KEY:
+        raise RuntimeError("Thiếu LITEROUTER_API_KEY trong file .env (hoặc đặt LITEROUTER_ENABLED=false)")
+    if gemini_client is None and not literouter.client.available:
+        raise RuntimeError("Chưa bật provider AI nào: đặt GEMINI_ENABLED=true hoặc LITEROUTER_ENABLED=true")
     bot.run(config.DISCORD_TOKEN, log_handler=None)
 
 

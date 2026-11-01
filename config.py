@@ -49,6 +49,18 @@ def _str_set(name: str) -> set[str]:
     return {x.strip().lower() for x in os.getenv(name, "").split(",") if x.strip()}
 
 
+def _csv(name: str) -> list[str]:
+    """Danh sách phân tách bằng dấu phẩy, giữ thứ tự và chữ hoa/thường (ID model phân biệt hoa thường)."""
+    seen: set[str] = set()
+    result: list[str] = []
+    for x in os.getenv(name, "").split(","):
+        x = x.strip()
+        if x and x not in seen:
+            seen.add(x)
+            result.append(x)
+    return result
+
+
 def _load_prompt() -> str:
     env_prompt = os.getenv("SYSTEM_PROMPT")
     if env_prompt:
@@ -64,7 +76,11 @@ DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 # --- Gemini ---
+GEMINI_ENABLED = _bool("GEMINI_ENABLED", True)
+# Model chính + các model dự phòng (thử lần lượt khi model trước bị quota / rate limit / lỗi tạm thời).
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
+GEMINI_FALLBACK_MODELS = _csv("GEMINI_FALLBACK_MODELS")
+GEMINI_MODELS = [GEMINI_MODEL, *(m for m in GEMINI_FALLBACK_MODELS if m != GEMINI_MODEL)]
 SYSTEM_PROMPT = _load_prompt()
 PRIVILEGED_NOTE = os.getenv(
     "PRIVILEGED_NOTE",
@@ -88,6 +104,11 @@ except ValueError:
 GEMINI_TIMEOUT = _int("GEMINI_TIMEOUT", 30)
 GEMINI_CONCURRENCY = max(1, _int("GEMINI_CONCURRENCY", 4))
 GEMINI_429_RETRY_SECONDS = _int("GEMINI_429_RETRY_SECONDS", 3)  # 0 = không thử lại khi bị 429
+
+# --- Thứ tự thử các provider (provider chưa bật / thiếu key sẽ bị bỏ qua) ---
+_known_providers = ("gemini", "literouter")
+AI_PROVIDER_ORDER = [p for p in dict.fromkeys(x.lower() for x in _csv("AI_PROVIDER_ORDER")) if p in _known_providers]
+AI_PROVIDER_ORDER += [p for p in _known_providers if p not in AI_PROVIDER_ORDER]
 
 # --- Hội thoại ---
 MAX_HISTORY_TURNS = _int("MAX_HISTORY_TURNS", 10)
@@ -124,3 +145,16 @@ REMINDER_RETENTION_DAYS = _int("REMINDER_RETENTION_DAYS", 30)  # xóa reminder �
 
 # --- Database ---
 DB_PATH = os.getenv("DB_PATH", "conversations.db")
+
+# --- Literouter (OpenAI-compatible) ---
+LITEROUTER_ENABLED = _bool("LITEROUTER_ENABLED", False)
+LITEROUTER_API_KEY = os.getenv("LITEROUTER_API_KEY")
+LITEROUTER_BASE_URL = (os.getenv("LITEROUTER_BASE_URL") or "https://literouter.fun/api/v1").strip().rstrip("/")
+# Để trống = tự dùng model đầu tiên trong danh sách lấy từ /models (không hardcode).
+LITEROUTER_MODEL = os.getenv("LITEROUTER_MODEL", "").strip()
+LITEROUTER_TIMEOUT = _int("LITEROUTER_TIMEOUT", 30)
+LITEROUTER_MODELS_REFRESH_HOURS = max(1, _int("LITEROUTER_MODELS_REFRESH_HOURS", 6))
+# Cache danh sách model: mặc định nằm cạnh file DB (trên Railway là Volume nên không mất khi redeploy).
+LITEROUTER_CACHE_PATH = os.getenv("LITEROUTER_CACHE_PATH") or os.path.join(
+    os.path.dirname(DB_PATH), "literouter_models.json"
+)

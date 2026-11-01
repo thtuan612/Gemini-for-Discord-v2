@@ -109,6 +109,7 @@ AI_PROVIDER_ORDER += [p for p in _known_providers if p not in AI_PROVIDER_ORDER]
 MAX_HISTORY_TURNS = _int("MAX_HISTORY_TURNS", 10)
 HISTORY_RETENTION_DAYS = _int("HISTORY_RETENTION_DAYS", 30)  # 0 = không tự xóa
 CHANNEL_HISTORY_LIMIT = _int("CHANNEL_HISTORY_LIMIT", 10)  # số tin nhắn kênh gần nhất đọc để hiểu context (0 = tắt)
+CHAT_INCLUDE_CHANNEL_CONTEXT = _bool("CHAT_INCLUDE_CHANNEL_CONTEXT", False)  # /chat mặc định không đọc tin nhắn của người khác
 MAX_REPLY_CHARS = 1900
 
 # --- Ảnh ---

@@ -28,8 +28,6 @@ from utils import (
     get_dir_size,
     get_memory_limit_bytes,
     is_trivial_message,
-    next_run_utc,
-    parse_hhmm,
     split_message,
 )
 
@@ -141,7 +139,6 @@ class GeminiBot(commands.Bot):
                 log.info("Synced %d slash command(s)", len(synced))
             except Exception:
                 log.exception("Không sync được slash commands")
-        reminder_check_loop.start()
         if config.HISTORY_RETENTION_DAYS > 0:
             history_purge_loop.start()
         if literouter.client.available:
@@ -597,56 +594,6 @@ async def ask_gemini(
     return reply
 
 
-# ======================================================================
-# Reminder
-# ======================================================================
-async def _fire_reminder(row, now: datetime) -> None:
-    scheduled = datetime.fromisoformat(row["next_run_utc"])
-    stale = now - scheduled > timedelta(minutes=config.REMINDER_GRACE_MINUTES)
-    text = row["message"]
-    should_send = True
-    if stale:
-        if row["repeat"] == "daily":
-            should_send = False  # lỡ giờ (vd: bot offline) — bỏ lượt hôm nay, hẹn lượt kế
-            log.info("Bỏ qua reminder #%s đã trễ quá hạn", row["id"])
-        else:
-            text = "⏰ (nhắc trễ) " + text
-
-    if should_send:
-        channel = bot.get_channel(row["channel_id"])
-        if channel is None:
-            log.warning("Không tìm thấy kênh %s cho reminder #%s", row["channel_id"], row["id"])
-        else:
-            try:
-                await channel.send(text, allowed_mentions=NO_MENTIONS)
-            except discord.HTTPException as e:
-                log.error("Gửi reminder #%s thất bại: %s", row["id"], e)
-                if e.status >= 500:
-                    return  # lỗi phía Discord — để lượt quét sau thử lại
-
-    if row["repeat"] == "daily":
-        nxt = next_run_utc(row["hour"], row["minute"], after=now)
-        await db.advance_reminder(row["id"], nxt.isoformat())
-    else:
-        await db.deactivate_reminder(row["id"])
-
-
-@tasks.loop(seconds=30)
-async def reminder_check_loop():
-    try:
-        now = datetime.now(timezone.utc)
-        for row in await db.get_due_reminders(now.replace(microsecond=0).isoformat()):
-            await _fire_reminder(row, now)
-    except Exception:
-        # Không để exception làm chết vòng lặp.
-        log.exception("Lỗi trong reminder_check_loop")
-
-
-@reminder_check_loop.before_loop
-async def _before_reminder_loop():
-    await bot.wait_until_ready()
-
-
 @tasks.loop(hours=6)
 async def history_purge_loop():
     try:
@@ -656,21 +603,6 @@ async def history_purge_loop():
             log.info("Đã xóa %d lịch sử hội thoại quá %d ngày", deleted, config.HISTORY_RETENTION_DAYS)
     except Exception:
         log.exception("Lỗi trong history_purge_loop")
-    if config.REMINDER_RETENTION_DAYS > 0:
-        try:
-            removed = await db.purge_inactive_reminders(config.REMINDER_RETENTION_DAYS)
-            if removed:
-                log.info("Đã xóa %d reminder đã tắt quá %d ngày", removed, config.REMINDER_RETENTION_DAYS)
-        except Exception:
-            log.exception("Lỗi khi dọn reminder đã tắt")
-
-
-async def backfill_reminder_guilds() -> None:
-    """Gán guild_id cho reminder tạo từ phiên bản cũ (chưa có cột này)."""
-    for row in await db.reminders_missing_guild():
-        guild = getattr(bot.get_channel(row["channel_id"]), "guild", None)
-        if guild:
-            await db.set_reminder_guild(row["id"], guild.id)
 
 
 # ======================================================================
@@ -698,10 +630,6 @@ async def on_ready():
             if guild.id not in allowed_guild_ids:
                 log.warning("Đang ở server không được phép: %s (ID: %s) — tự rời.", guild.name, guild.id)
                 await guild.leave()
-    try:
-        await backfill_reminder_guilds()
-    except Exception:
-        log.exception("Backfill guild_id cho reminder thất bại")
     log.info("Logged in as %s (ID: %s)", bot.user, bot.user.id)
 
 
@@ -1060,138 +988,6 @@ async def reset_command(interaction: discord.Interaction):
     await interaction.response.send_message("Đã xóa lịch sử hội thoại của bạn.", ephemeral=True)
 
 
-@bot.tree.command(name="remind", description="Đặt lịch nhắc tự động (giờ Việt Nam)")
-@app_commands.describe(
-    time="Giờ theo định dạng HH:MM, 24h, giờ Việt Nam (vd: 06:00)",
-    message="Nội dung tin nhắn sẽ gửi",
-    repeat="Lặp lại hàng ngày hay chỉ 1 lần",
-    channel="Kênh sẽ gửi tin (mặc định: kênh hiện tại)",
-)
-@app_commands.choices(
-    repeat=[
-        app_commands.Choice(name="Một lần", value="once"),
-        app_commands.Choice(name="Hàng ngày", value="daily"),
-    ]
-)
-async def remind_command(
-    interaction: discord.Interaction,
-    time: str,
-    message: str,
-    repeat: app_commands.Choice[str],
-    channel: discord.TextChannel | None = None,
-):
-    parsed = parse_hhmm(time)
-    if parsed is None:
-        await interaction.response.send_message(
-            "Giờ không hợp lệ, nhập dạng `HH:MM` 24h nhé, ví dụ `06:00` hoặc `18:30`.",
-            ephemeral=True,
-        )
-        return
-    hour, minute = parsed
-
-    text = message.strip()
-    if not text or len(text) > config.MAX_REMINDER_LENGTH:
-        await interaction.response.send_message(
-            f"Nội dung nhắc phải từ 1 đến {config.MAX_REMINDER_LENGTH} ký tự.", ephemeral=True
-        )
-        return
-
-    target = channel or interaction.channel
-    if not isinstance(target, (discord.TextChannel, discord.Thread)):
-        await interaction.response.send_message("Kênh này không gửi nhắc được.", ephemeral=True)
-        return
-    user_perms = target.permissions_for(interaction.user)
-    if not (user_perms.view_channel and user_perms.send_messages):
-        await interaction.response.send_message(
-            "Bạn không có quyền gửi tin vào kênh đó.", ephemeral=True
-        )
-        return
-    bot_perms = target.permissions_for(interaction.guild.me)
-    if not (bot_perms.view_channel and bot_perms.send_messages):
-        await interaction.response.send_message("Bot không có quyền gửi tin vào kênh đó.", ephemeral=True)
-        return
-
-    active = await db.count_active_reminders(interaction.user.id, interaction.guild_id)
-    if active >= config.MAX_REMINDERS_PER_USER:
-        await interaction.response.send_message(
-            f"Bạn đã có {active} lịch nhắc đang chạy (tối đa {config.MAX_REMINDERS_PER_USER}). "
-            "Hủy bớt bằng `/remind_cancel` nhé.",
-            ephemeral=True,
-        )
-        return
-
-    next_run = next_run_utc(hour, minute)
-    reminder_id = await db.add_reminder(
-        guild_id=interaction.guild_id,
-        channel_id=target.id,
-        message=text,
-        repeat=repeat.value,
-        hour=hour,
-        minute=minute,
-        next_run_iso=next_run.isoformat(),
-        created_by=interaction.user.id,
-    )
-    repeat_text = "mỗi ngày" if repeat.value == "daily" else "một lần duy nhất"
-    next_run_vn = next_run.astimezone(config.VN_TZ)
-    await interaction.response.send_message(
-        f"✅ Đã đặt lịch #{reminder_id}: gửi **{repeat_text}** lúc **{hour:02d}:{minute:02d}** "
-        f"vào {target.mention}.\nLần chạy kế tiếp: "
-        f"{next_run_vn.strftime('%H:%M %d/%m/%Y')} (giờ VN)."
-    )
-
-
-@bot.tree.command(name="remind_list", description="Xem danh sách lịch nhắc đang hoạt động")
-async def remind_list_command(interaction: discord.Interaction):
-    rows = await db.list_reminders(interaction.guild_id)
-    if not rows:
-        await interaction.response.send_message("Server này chưa có lịch nhắc nào đang hoạt động.")
-        return
-
-    lines = []
-    for r in rows:
-        next_run_vn = datetime.fromisoformat(r["next_run_utc"]).astimezone(config.VN_TZ)
-        repeat_text = "hàng ngày" if r["repeat"] == "daily" else "1 lần"
-        channel = bot.get_channel(r["channel_id"])
-        channel_text = channel.mention if channel else f"(kênh {r['channel_id']})"
-        preview = r["message"] if len(r["message"]) <= 120 else r["message"][:117] + "..."
-        lines.append(
-            f"`#{r['id']}` — {channel_text} — {repeat_text} lúc "
-            f"{r['hour']:02d}:{r['minute']:02d} — kế tiếp: {next_run_vn.strftime('%H:%M %d/%m')} "
-            f"— bởi <@{r['created_by']}>\n └ {preview}"
-        )
-    chunks = split_message("📋 **Danh sách lịch nhắc:**\n" + "\n".join(lines), config.MAX_REPLY_CHARS)
-    await interaction.response.send_message(chunks[0])
-    for chunk in chunks[1:]:
-        await interaction.followup.send(chunk)
-
-
-@bot.tree.command(name="remind_cancel", description="Hủy một lịch nhắc theo ID")
-@app_commands.describe(id="ID của lịch nhắc (xem bằng /remind_list)")
-async def remind_cancel_command(interaction: discord.Interaction, id: int):
-    not_found = f"Không tìm thấy lịch nhắc `#{id}` đang hoạt động trong server này."
-    row = await db.get_reminder(id)
-    if row is None or not row["active"]:
-        await interaction.response.send_message(not_found, ephemeral=True)
-        return
-
-    guild_id = row["guild_id"] or getattr(
-        getattr(bot.get_channel(row["channel_id"]), "guild", None), "id", 0
-    )
-    if guild_id != interaction.guild_id:
-        # Cùng thông báo như "không tồn tại" để không lộ ID của server khác.
-        await interaction.response.send_message(not_found, ephemeral=True)
-        return
-
-    if row["created_by"] != interaction.user.id and not is_privileged(interaction.user):
-        await interaction.response.send_message(
-            "Chỉ người tạo lịch nhắc hoặc Admin/Owner mới hủy được.", ephemeral=True
-        )
-        return
-
-    await db.deactivate_reminder(id)
-    await interaction.response.send_message(f"🗑️ Đã hủy lịch nhắc `#{id}`.")
-
-
 @bot.tree.command(name="autochat_add", description="[Admin] Cho bot tự đọc & rep mọi tin nhắn trong kênh này")
 @app_commands.describe(channel="Kênh muốn bật (mặc định: kênh hiện tại)")
 async def autochat_add_command(
@@ -1266,7 +1062,6 @@ async def build_botinfo_embed(guild: discord.Guild | None) -> discord.Embed:
     uptime = datetime.now(timezone.utc) - BOT_START_TIME
     total_members = sum(g.member_count or 0 for g in bot.guilds)
     total_members_text = f"{total_members:,}".replace(",", ".")
-    active_reminders = await db.count_active_reminders_total()
 
     guild_autochat_count = 0
     if guild:
@@ -1284,7 +1079,6 @@ async def build_botinfo_embed(guild: discord.Guild | None) -> discord.Embed:
         f"🐍 **Python:** {platform.python_version()}\n"
         f"📘 **discord.py:** {discord.__version__}\n"
         f"✨ **AI:** {describe_ai_providers()}\n"
-        f"⏰ **Lịch nhắc đang chạy:** {active_reminders}\n"
         f"📣 **Kênh auto-chat:** {len(auto_chat_channels)} kênh (Server này: {guild_autochat_count})\n\n"
         "💡 *Dùng nút bên dưới để đổi cài đặt Auto-Chat.*"
     )

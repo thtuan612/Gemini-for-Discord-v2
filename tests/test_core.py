@@ -90,6 +90,10 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.gather(*(self.db.save_history_raw(1, i, str(i)) for i in range(50)))
         self.assertEqual(await self.db.load_history_raw(1, 49), "49")
 
+    async def test_database_uses_secure_delete(self):
+        row = await self.db._q("PRAGMA secure_delete", mode="one")
+        self.assertEqual(row[0], 1)
+
     async def test_database_creates_parent_directory(self):
         nested_path = os.path.join(self.tmp.name, "nested", "data", "bot.db")
         nested = Database(nested_path)
@@ -163,6 +167,11 @@ import bot as bot_module  # noqa: E402
 import botinfo as botinfo_module  # noqa: E402
 
 from bot import (  # noqa: E402
+    _cache_get,
+    _cache_put,
+    _history_cache_times,
+    history_cache,
+    HISTORY_CACHE_TTL_SECONDS,
     _channel_message_cache,
     bot,
     build_channel_context,
@@ -170,6 +179,29 @@ from bot import (  # noqa: E402
     is_message_for_bot,
     record_channel_message,
 )
+
+
+class HistoryCacheTests(unittest.TestCase):
+    def setUp(self):
+        history_cache.clear()
+        _history_cache_times.clear()
+
+    def test_cache_expires_after_ttl(self):
+        from collections import deque
+        item = deque(["entry"])
+        with unittest.mock.patch("bot.time.monotonic", return_value=100.0):
+            _cache_put((10, 20), item)
+        with unittest.mock.patch("bot.time.monotonic", return_value=100.0 + HISTORY_CACHE_TTL_SECONDS + 1):
+            self.assertIsNone(_cache_get((10, 20)))
+        self.assertNotIn((10, 20), history_cache)
+
+    def test_cache_hit_before_ttl(self):
+        from collections import deque
+        item = deque(["entry"])
+        with unittest.mock.patch("bot.time.monotonic", return_value=100.0):
+            _cache_put((10, 20), item)
+        with unittest.mock.patch("bot.time.monotonic", return_value=100.0 + HISTORY_CACHE_TTL_SECONDS - 1):
+            self.assertIs(_cache_get((10, 20)), item)
 
 
 class ChannelContextTests(unittest.IsolatedAsyncioTestCase):

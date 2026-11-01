@@ -5,7 +5,7 @@ import asyncio
 import logging
 import sqlite3
 import threading
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 log = logging.getLogger("discord-ai-bot.db")
 
@@ -18,20 +18,6 @@ CREATE TABLE IF NOT EXISTS chat_history (
     PRIMARY KEY (guild_id, user_id)
 );
 CREATE INDEX IF NOT EXISTS idx_chat_history_updated ON chat_history(updated_at);
-
-CREATE TABLE IF NOT EXISTS reminders (
-    id           INTEGER PRIMARY KEY AUTOINCREMENT,
-    channel_id   INTEGER NOT NULL,
-    message      TEXT    NOT NULL,
-    repeat       TEXT    NOT NULL,            -- 'once' hoặc 'daily'
-    hour         INTEGER NOT NULL,            -- giờ VN (0-23)
-    minute       INTEGER NOT NULL,            -- phút VN (0-59)
-    next_run_utc TEXT    NOT NULL,            -- ISO datetime UTC
-    created_by   INTEGER NOT NULL,
-    active       INTEGER NOT NULL DEFAULT 1,
-    guild_id     INTEGER NOT NULL DEFAULT 0
-);
-CREATE INDEX IF NOT EXISTS idx_reminders_due ON reminders(active, next_run_utc);
 
 CREATE TABLE IF NOT EXISTS auto_chat_channels (
     channel_id INTEGER PRIMARY KEY,
@@ -60,10 +46,9 @@ class Database:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
         conn.executescript(SCHEMA)
-        # Migration: DB cũ chưa có cột guild_id
-        cols = {r["name"] for r in conn.execute("PRAGMA table_info(reminders)")}
-        if "guild_id" not in cols:
-            conn.execute("ALTER TABLE reminders ADD COLUMN guild_id INTEGER NOT NULL DEFAULT 0")
+        # Dọn bảng Reminder cũ nếu DB được nâng cấp từ phiên bản trước.
+        # Các bảng dữ liệu khác được giữ nguyên.
+        conn.execute("DROP TABLE IF EXISTS reminders")
         # Bảng lịch sử cũ (khóa theo user_id, lẫn giữa các server) không còn dùng.
         conn.execute("DROP TABLE IF EXISTS conversations")
         conn.commit()
@@ -199,87 +184,3 @@ class Database:
             "SELECT guild_id, added_by, added_at FROM allowed_guilds ORDER BY added_at DESC",
             mode="all",
         )
-
-    # ---------- reminders ----------
-    async def list_all_active_reminders(self):
-        return await self._q(
-            "SELECT * FROM reminders WHERE active = 1 ORDER BY next_run_utc", mode="all"
-        )
-
-    async def add_reminder(
-        self,
-        *,
-        guild_id: int,
-        channel_id: int,
-        message: str,
-        repeat: str,
-        hour: int,
-        minute: int,
-        next_run_iso: str,
-        created_by: int,
-    ) -> int:
-        _, rid = await self._q(
-            """
-            INSERT INTO reminders
-              (channel_id, message, repeat, hour, minute, next_run_utc, created_by, active, guild_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)
-            """,
-            (channel_id, message, repeat, hour, minute, next_run_iso, created_by, guild_id),
-        )
-        return rid
-
-    async def get_reminder(self, reminder_id: int):
-        return await self._q("SELECT * FROM reminders WHERE id = ?", (reminder_id,), "one")
-
-    async def get_due_reminders(self, now_iso: str):
-        return await self._q(
-            "SELECT * FROM reminders WHERE active = 1 AND next_run_utc <= ? ORDER BY next_run_utc",
-            (now_iso,),
-            "all",
-        )
-
-    async def advance_reminder(self, reminder_id: int, next_run_iso: str) -> None:
-        await self._q(
-            "UPDATE reminders SET next_run_utc = ? WHERE id = ?", (next_run_iso, reminder_id)
-        )
-
-    async def deactivate_reminder(self, reminder_id: int) -> bool:
-        rowcount, _ = await self._q(
-            "UPDATE reminders SET active = 0 WHERE id = ? AND active = 1", (reminder_id,)
-        )
-        return rowcount > 0
-
-    async def list_reminders(self, guild_id: int):
-        return await self._q(
-            "SELECT * FROM reminders WHERE active = 1 AND guild_id = ? ORDER BY next_run_utc",
-            (guild_id,),
-            "all",
-        )
-
-    async def count_active_reminders(self, user_id: int, guild_id: int) -> int:
-        row = await self._q(
-            "SELECT COUNT(*) FROM reminders WHERE active = 1 AND created_by = ? AND guild_id = ?",
-            (user_id, guild_id),
-            "one",
-        )
-        return row[0]
-
-    async def purge_inactive_reminders(self, days: int) -> int:
-        """Xóa reminder đã tắt (xong/hủy) có giờ chạy cũ hơn N ngày."""
-        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
-        rowcount, _ = await self._q(
-            "DELETE FROM reminders WHERE active = 0 AND next_run_utc < ?", (cutoff,)
-        )
-        return rowcount
-
-    async def count_active_reminders_total(self) -> int:
-        row = await self._q("SELECT COUNT(*) FROM reminders WHERE active = 1", mode="one")
-        return row[0]
-
-    async def reminders_missing_guild(self):
-        return await self._q(
-            "SELECT id, channel_id FROM reminders WHERE active = 1 AND guild_id = 0", mode="all"
-        )
-
-    async def set_reminder_guild(self, reminder_id: int, guild_id: int) -> None:
-        await self._q("UPDATE reminders SET guild_id = ? WHERE id = ?", (guild_id, reminder_id))

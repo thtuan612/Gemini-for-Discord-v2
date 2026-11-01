@@ -110,7 +110,8 @@ Chi tiết đầy đủ các tùy chọn cấu hình trong [`.env.example`](.env
 - `AUTO_CHAT_CHANNEL_IDS`: Danh sách ID kênh bật sẵn chế độ tự động trò chuyện.
 - `ADMIN_ROLE_IDS`: ID các role có quyền Admin điều khiển bot (bên cạnh Owner và quyền Administrator).
 - `AUTO_CHAT_COOLDOWN_SECONDS`: Giãn cách tối thiểu giữa các lần kích hoạt auto-chat của 1 người dùng (mặc định: `3` giây).
-- `CHANNEL_HISTORY_LIMIT`: Số tin nhắn gần nhất đọc để tạo ngữ cảnh hội thoại (mặc định: `10`, đặt `0` để tắt).
+- `CHANNEL_HISTORY_LIMIT`: Số tin nhắn gần nhất Auto-Chat/mention đọc để tạo ngữ cảnh (mặc định: `10`, đặt `0` để tắt).
+- `CHAT_INCLUDE_CHANNEL_CONTEXT`: Cho phép `/chat` gửi lịch sử kênh (có thể chứa tin nhắn của người khác) tới AI provider; mặc định `false`.
 - `STATUS_TYPE` & `STATUS_TEXT`: Trạng thái hoạt động hiển thị của bot (ví dụ: `playing`, `Where Winds Meet`).
 
 ### Cơ sở dữ liệu
@@ -188,7 +189,8 @@ python -m unittest tests/test_core.py -v
 ## 🛡️ Bảo mật & Tối ưu
 
 - **Bảo mật bí mật:** File `.env` và các tệp dữ liệu SQLite (`*.db`, `*.db-wal`) đã được cấu hình trong `.gitignore` để không bao giờ bị lộ lên Git repository.
-- **Tối ưu bộ nhớ cache:** Áp dụng bộ nhớ đệm LRU cho lịch sử chat và bộ đếm thành viên bot để giảm thiểu truy vấn lặp lại.
+- **Tối ưu bộ nhớ cache:** Áp dụng LRU có TTL 5 phút cho lịch sử chat; dữ liệu cũ được nạp lại từ SQLite thay vì giữ vô thời hạn trong RAM.
+- **Quyền riêng tư dữ liệu:** `/chat` không đọc lịch sử kênh theo mặc định; retention tự động xóa lịch sử sau 30 ngày, SQLite bật `secure_delete` và checkpoint WAL sau thao tác xóa.
 - **Xử lý bất đồng bộ chuẩn mực:** Mọi thao tác I/O với database và filesystem đều được đưa vào thread pool (`asyncio.to_thread`), tránh block event loop chính của Discord.
 
 ---

@@ -585,7 +585,7 @@ async def ask_gemini(
 
     if not reply:
         return MSG_TRUNCATED if truncated else MSG_EMPTY
-    if auto_channel and SKIP_TOKEN in reply:
+    if auto_channel and reply.strip() == SKIP_TOKEN:
         return None
     if truncated:
         reply += " …"

@@ -23,6 +23,7 @@ from channel_context import ChannelContext, REFERENCE_UNSET
 import botinfo
 from botinfo import BotInfoMainView, build_botinfo_embed
 from db import Database
+from prompt_security import PROMPT_SECURITY_INSTRUCTION, build_untrusted_payload
 from utils import (
     is_trivial_message,
     split_message,

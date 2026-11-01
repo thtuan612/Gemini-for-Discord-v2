@@ -900,7 +900,8 @@ async def autochat_add_command(
     if await db.add_auto_chat_channel(target.id, interaction.guild_id, interaction.user.id):
         auto_chat_channels.add(target.id)
         await interaction.response.send_message(
-            f"✅ Đã bật auto-chat ở {target.mention} — không cần mention, cứ gõ là bot rep."
+            f"✅ Đã bật auto-chat ở {target.mention} — không cần mention, cứ gõ là bot rep. "
+            "Tin nhắn trong kênh có thể được gửi tới AI provider đang cấu hình để xử lý."
         )
     else:
         auto_chat_channels.add(target.id)

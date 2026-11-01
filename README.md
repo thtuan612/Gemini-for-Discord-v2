@@ -178,7 +178,7 @@ python -m unittest tests/test_core.py -v
 ```
 
 **Các nhóm kiểm thử chính:**
-- `UtilsTests`: Kiểm tra hàm chia đoạn văn bản (`split_message`), tính thời gian lặp (`next_run_utc`), parse thời gian (`parse_hhmm`).
+- `UtilsTests`: Kiểm tra giới hạn và cách chia đoạn văn bản (`split_message`).
 - `DatabaseTests`: Kiểm tra phân tách dữ liệu theo Guild/User, transaction an toàn, tự động dọn dẹp (purge), migration và bảo toàn dữ liệu hiện có.
 - `ChannelContextTests`: Kiểm tra định dạng ngữ cảnh các tin nhắn gần nhất và tin nhắn trích dẫn.
 - `AskGeminiRetryTests`: Giả lập các phản hồi lỗi từ Google Gemini (429 Rate Limit, 5xx Server Error, Timeout, Client Error) để đảm bảo bot retry và phản hồi chính xác.

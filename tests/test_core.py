@@ -1,5 +1,6 @@
 import asyncio
 import os
+import stat
 import sys
 import tempfile
 import unittest
@@ -93,6 +94,11 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
     async def test_database_uses_secure_delete(self):
         row = await self.db._q("PRAGMA secure_delete", mode="one")
         self.assertEqual(row[0], 1)
+
+    async def test_database_file_permissions_are_private(self):
+        if os.name == "posix":
+            mode = stat.S_IMODE(os.stat(self.db.path).st_mode)
+            self.assertEqual(mode, 0o600)
 
     async def test_database_creates_parent_directory(self):
         nested_path = os.path.join(self.tmp.name, "nested", "data", "bot.db")

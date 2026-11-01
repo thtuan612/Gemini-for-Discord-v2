@@ -21,6 +21,7 @@ from google.genai.errors import ClientError, ServerError
 
 import config
 import literouter
+from channel_context import ChannelContext, REFERENCE_UNSET
 from db import Database
 from utils import (
     format_bytes,
@@ -633,83 +634,16 @@ async def on_ready():
     log.info("Logged in as %s (ID: %s)", bot.user, bot.user.id)
 
 
-# Cache tin nhắn gần nhất theo channel_id để nạp ngữ cảnh tức thì,
-# đọc trước theo thời gian thực mà không cần gọi API channel.history() của Discord.
-CHANNEL_MESSAGE_CACHE_MAX_CHANNELS = 200
-_channel_message_cache: OrderedDict[int, deque[discord.Message]] = OrderedDict()
+# Channel context được quản lý độc lập để bot.py chỉ điều phối luồng xử lý.
+channel_context_manager = ChannelContext(bot, log)
 
 
 def record_channel_message(message: discord.Message | None) -> None:
-    """Lưu tin nhắn vào cache RAM theo kênh để nạp ngữ cảnh tức thì (0ms mạng)."""
-    if message is None or not getattr(message, "channel", None) or not hasattr(message.channel, "id"):
-        return
-    chid = message.channel.id
-    dq = _channel_message_cache.get(chid)
-    if dq is None:
-        if len(_channel_message_cache) >= CHANNEL_MESSAGE_CACHE_MAX_CHANNELS:
-            _channel_message_cache.popitem(last=False)
-        dq = deque(maxlen=max(20, config.CHANNEL_HISTORY_LIMIT * 2))
-        _channel_message_cache[chid] = dq
-    else:
-        _channel_message_cache.move_to_end(chid)
-
-    if dq and getattr(dq[-1], "id", None) == getattr(message, "id", None):
-        return
-    dq.append(message)
+    channel_context_manager.record_message(message)
 
 
 async def get_referenced_message(message: discord.Message) -> discord.Message | None:
-    """Lấy tin nhắn được reply/trích dẫn nếu có."""
-    if message.reference is None:
-        return None
-    ref = message.reference.resolved
-    if isinstance(ref, discord.Message):
-        return ref
-    ref_id = message.reference.message_id
-    if not ref_id:
-        return None
-
-    # Tìm trước trong cache RAM của kênh (tức thì, tránh tốn network call)
-    chid = getattr(message.channel, "id", None)
-    if chid and chid in _channel_message_cache:
-        for m in _channel_message_cache[chid]:
-            if getattr(m, "id", None) == ref_id:
-                return m
-
-    if hasattr(message.channel, "fetch_message"):
-        try:
-            return await message.channel.fetch_message(ref_id)
-        except Exception:
-            return None
-    return None
-
-
-def _format_channel_context_message(
-    message: discord.Message,
-    *,
-    max_chars: int,
-    include_reply: bool = True,
-) -> str:
-    author = message.author
-    if bot.user and author.id == bot.user.id:
-        author_name = f"Bot ({bot.user.display_name} - chính bạn)"
-    else:
-        author_name = getattr(author, "display_name", str(author))
-
-    text = (getattr(message, "clean_content", None) or getattr(message, "content", None) or "").strip()
-    attachments = getattr(message, "attachments", None) or []
-    if attachments:
-        names = ", ".join(attachment.filename for attachment in attachments[:2])
-        tag = f"[kèm {len(attachments)} file/ảnh: {names}]"
-        text = f"{text} {tag}".strip() if text else tag
-    if len(text) > max_chars:
-        text = text[:max_chars] + "..."
-
-    reply_tag = ""
-    reference = getattr(message, "reference", None)
-    if include_reply and reference and getattr(reference, "message_id", None):
-        reply_tag = " (đang reply)"
-    return f"- {author_name}{reply_tag}: {text or '[Nội dung trống]'}"
+    return await channel_context_manager.get_reference(message)
 
 
 async def build_channel_context(
@@ -719,98 +653,17 @@ async def build_channel_context(
     ref_msg: discord.Message | None = None,
     limit: int = config.CHANNEL_HISTORY_LIMIT,
 ) -> str:
-    """Đọc lịch sử các tin nhắn gần nhất trong kênh và tin nhắn trích dẫn (nếu có) để tạo ngữ cảnh."""
-    if channel is None or limit <= 0:
-        return ""
-
-    messages: list[discord.Message] = []
-    chid = getattr(channel, "id", None)
-    cached = _channel_message_cache.get(chid) if chid else None
-
-    if cached:
-        # Lấy từ cache RAM (nhanh, 0ms network latency)
-        for msg in reversed(cached):
-            if current_message is not None and getattr(msg, "id", None) == getattr(current_message, "id", None):
-                continue
-            content = (getattr(msg, "clean_content", None) or getattr(msg, "content", None) or "").strip()
-            attachments = getattr(msg, "attachments", None) or []
-            if not content and not attachments:
-                continue
-            messages.append(msg)
-            if len(messages) >= limit:
-                break
-        messages.reverse()
-    elif hasattr(channel, "history"):
-        # Fallback khi cache chưa có tin (vd: bot vừa khởi động)
-        try:
-            before = current_message if current_message is not None else None
-            async for msg in channel.history(limit=limit, before=before):
-                if current_message is not None and getattr(msg, "id", None) == getattr(current_message, "id", None):
-                    continue
-                content = (getattr(msg, "clean_content", None) or getattr(msg, "content", None) or "").strip()
-                attachments = getattr(msg, "attachments", None) or []
-                if not content and not attachments:
-                    continue
-                messages.append(msg)
-        except Exception as e:
-            log.warning("Không thể đọc lịch sử tin nhắn kênh %s: %s", getattr(channel, "id", None), e)
-        messages.reverse()
-        for m in messages:
-            record_channel_message(m)
-
-    lines: list[str] = []
-
-    if messages:
-        lines.append("Lịch sử các tin nhắn gần nhất trong kênh chat (từ cũ đến mới để bạn nắm ngữ cảnh):")
-        for msg in messages:
-            lines.append(_format_channel_context_message(msg, max_chars=300))
-
-    if ref_msg is not None:
-        lines.append("\n[Tin nhắn đang được người dùng trực tiếp reply / trích dẫn]:")
-        lines.append(_format_channel_context_message(ref_msg, max_chars=400, include_reply=False))
-
-    if not lines:
-        return ""
-
-    lines.append(
-        "\nLƯU Ý VỀ NGỮ CẢNH: Đoạn chat trên là các tin nhắn gần nhất trong kênh để bạn hiểu "
-        "mọi người đang thảo luận vấn đề gì, ai đang hỏi ai, các đại từ 'nó', 'đó', 'họ', 'quán đó'... "
-        "ám chỉ điều gì. Nếu câu hỏi hiện tại tiếp nối cuộc trò chuyện trên, hãy trả lời đúng ngữ cảnh, "
-        "tuyệt đối không trả lời lạc đề, bậy bạ hoặc vô nghĩa. Nếu người dùng hỏi một chủ đề hoàn toàn "
-        "mới, hãy tập trung trả lời chủ đề mới đó."
+    return await channel_context_manager.build(
+        channel, current_message=current_message, ref_msg=ref_msg, limit=limit
     )
-
-    return "\n".join(lines)
-
-
-_REFERENCE_UNSET = object()
 
 
 async def is_message_for_bot(
     message: discord.Message,
     *,
-    ref_msg: object = _REFERENCE_UNSET,
+    ref_msg: object = REFERENCE_UNSET,
 ) -> bool:
-    """Lọc tin nhắn; có thể nhận reference đã tải để tránh gọi Discord API lần hai."""
-    if bot.user and bot.user in message.mentions:
-        return True
-
-    if message.reference is not None:
-        if ref_msg is _REFERENCE_UNSET:
-            ref_msg = message.reference.resolved
-            if ref_msg is None and message.reference.message_id:
-                try:
-                    ref_msg = await message.channel.fetch_message(message.reference.message_id)
-                except discord.HTTPException:
-                    ref_msg = None
-        # resolved có thể là DeletedReferencedMessage (không có .author).
-        if isinstance(ref_msg, discord.Message) and (not bot.user or ref_msg.author.id != bot.user.id):
-            return False
-
-    human_mentions = [m for m in message.mentions if not m.bot]
-    if human_mentions and (not bot.user or bot.user not in message.mentions):
-        return False
-    return True
+    return await channel_context_manager.is_message_for_bot(message, ref_msg=ref_msg)
 
 
 _auto_last: dict[tuple[int, int], float] = {}

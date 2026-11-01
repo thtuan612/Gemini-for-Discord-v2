@@ -684,6 +684,34 @@ async def get_referenced_message(message: discord.Message) -> discord.Message | 
     return None
 
 
+def _format_channel_context_message(
+    message: discord.Message,
+    *,
+    max_chars: int,
+    include_reply: bool = True,
+) -> str:
+    author = message.author
+    if bot.user and author.id == bot.user.id:
+        author_name = f"Bot ({bot.user.display_name} - chính bạn)"
+    else:
+        author_name = getattr(author, "display_name", str(author))
+
+    text = (getattr(message, "clean_content", None) or getattr(message, "content", None) or "").strip()
+    attachments = getattr(message, "attachments", None) or []
+    if attachments:
+        names = ", ".join(attachment.filename for attachment in attachments[:2])
+        tag = f"[kèm {len(attachments)} file/ảnh: {names}]"
+        text = f"{text} {tag}".strip() if text else tag
+    if len(text) > max_chars:
+        text = text[:max_chars] + "..."
+
+    reply_tag = ""
+    reference = getattr(message, "reference", None)
+    if include_reply and reference and getattr(reference, "message_id", None):
+        reply_tag = " (đang reply)"
+    return f"- {author_name}{reply_tag}: {text or '[Nội dung trống]'}"
+
+
 async def build_channel_context(
     channel: discord.abc.Messageable | None,
     *,
@@ -735,46 +763,11 @@ async def build_channel_context(
     if messages:
         lines.append("Lịch sử các tin nhắn gần nhất trong kênh chat (từ cũ đến mới để bạn nắm ngữ cảnh):")
         for msg in messages:
-            if bot.user and msg.author.id == bot.user.id:
-                author_name = f"Bot ({bot.user.display_name} - chính bạn)"
-            else:
-                author_name = getattr(msg.author, "display_name", str(msg.author))
-
-            text = (getattr(msg, "clean_content", None) or getattr(msg, "content", None) or "").strip()
-            attachments = getattr(msg, "attachments", None) or []
-            if attachments:
-                att_names = ", ".join(a.filename for a in attachments[:2])
-                att_tag = f"[kèm {len(attachments)} file/ảnh: {att_names}]"
-                text = f"{text} {att_tag}".strip() if text else att_tag
-
-            if len(text) > 300:
-                text = text[:300] + "..."
-
-            reply_tag = ""
-            ref = getattr(msg, "reference", None)
-            if ref and getattr(ref, "message_id", None):
-                reply_tag = " (đang reply)"
-
-            lines.append(f"- {author_name}{reply_tag}: {text}")
+            lines.append(_format_channel_context_message(msg, max_chars=300))
 
     if ref_msg is not None:
-        if bot.user and ref_msg.author.id == bot.user.id:
-            ref_author = f"Bot ({bot.user.display_name} - chính bạn)"
-        else:
-            ref_author = getattr(ref_msg.author, "display_name", str(ref_msg.author))
-
-        ref_text = (getattr(ref_msg, "clean_content", None) or getattr(ref_msg, "content", None) or "").strip()
-        ref_atts = getattr(ref_msg, "attachments", None) or []
-        if ref_atts:
-            att_names = ", ".join(a.filename for a in ref_atts[:2])
-            att_tag = f"[kèm {len(ref_atts)} file/ảnh: {att_names}]"
-            ref_text = f"{ref_text} {att_tag}".strip() if ref_text else att_tag
-
-        if len(ref_text) > 400:
-            ref_text = ref_text[:400] + "..."
-
         lines.append("\n[Tin nhắn đang được người dùng trực tiếp reply / trích dẫn]:")
-        lines.append(f"- {ref_author}: {ref_text or '[Nội dung trống]'}")
+        lines.append(_format_channel_context_message(ref_msg, max_chars=400, include_reply=False))
 
     if not lines:
         return ""

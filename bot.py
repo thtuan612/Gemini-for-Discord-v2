@@ -790,19 +790,27 @@ async def build_channel_context(
     return "\n".join(lines)
 
 
-async def is_message_for_bot(message: discord.Message) -> bool:
-    """Lọc nhanh, không tốn API call: loại các trường hợp rõ ràng KHÔNG nói với bot."""
+_REFERENCE_UNSET = object()
+
+
+async def is_message_for_bot(
+    message: discord.Message,
+    *,
+    ref_msg: discord.Message | None | object = _REFERENCE_UNSET,
+) -> bool:
+    """Lọc tin nhắn; có thể nhận reference đã tải để tránh gọi Discord API lần hai."""
     if bot.user and bot.user in message.mentions:
         return True
 
     if message.reference is not None:
-        ref_msg = message.reference.resolved
-        if ref_msg is None and message.reference.message_id:
-            try:
-                ref_msg = await message.channel.fetch_message(message.reference.message_id)
-            except (discord.NotFound, discord.HTTPException):
-                ref_msg = None
-        # `resolved` có thể là DeletedReferencedMessage (không có .author)
+        if ref_msg is _REFERENCE_UNSET:
+            ref_msg = message.reference.resolved
+            if ref_msg is None and message.reference.message_id:
+                try:
+                    ref_msg = await message.channel.fetch_message(message.reference.message_id)
+                except discord.HTTPException:
+                    ref_msg = None
+        # resolved có thể là DeletedReferencedMessage (không có .author).
         if isinstance(ref_msg, discord.Message) and (not bot.user or ref_msg.author.id != bot.user.id):
             return False
 
@@ -852,7 +860,7 @@ async def process_chat_message(
             return
         if _auto_chat_on_cooldown(message.channel.id, message.author.id):
             return
-        if not await is_message_for_bot(message):
+        if not await is_message_for_bot(message, ref_msg=ref_msg):
             return
 
     key: HistoryKey = (message.guild.id, message.author.id)
@@ -1054,10 +1062,34 @@ async def autochat_list_command(interaction: discord.Interaction):
 # ======================================================================
 # Bảng điều khiển /botinfo tương tác
 # ======================================================================
+APP_DIR = os.path.dirname(os.path.abspath(__file__))
+APP_DISK_CACHE_TTL = 60
+_PROCESS = psutil.Process(os.getpid())
+_app_disk_size_cache: tuple[float, int] | None = None
+_app_disk_size_lock = asyncio.Lock()
+
+
+async def _get_app_disk_size() -> int:
+    """Cache dung lượng thư mục bot 60 giây để tránh quét ổ đĩa mỗi lần refresh /botinfo."""
+    global _app_disk_size_cache
+    now = time.monotonic()
+    cached = _app_disk_size_cache
+    if cached is not None and now - cached[0] < APP_DISK_CACHE_TTL:
+        return cached[1]
+
+    async with _app_disk_size_lock:
+        now = time.monotonic()
+        cached = _app_disk_size_cache
+        if cached is not None and now - cached[0] < APP_DISK_CACHE_TTL:
+            return cached[1]
+        size = await asyncio.to_thread(get_dir_size, APP_DIR)
+        _app_disk_size_cache = (time.monotonic(), size)
+        return size
+
+
 async def build_botinfo_embed(guild: discord.Guild | None) -> discord.Embed:
-    process = psutil.Process(os.getpid())
-    app_dir = os.path.dirname(os.path.abspath(__file__))
-    app_disk_used = await asyncio.to_thread(get_dir_size, app_dir)
+    process = _PROCESS
+    app_disk_used = await _get_app_disk_size()
     db_size = os.path.getsize(config.DB_PATH) if os.path.exists(config.DB_PATH) else 0
     uptime = datetime.now(timezone.utc) - BOT_START_TIME
     total_members = sum(g.member_count or 0 for g in bot.guilds)

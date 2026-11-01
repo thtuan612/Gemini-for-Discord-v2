@@ -330,6 +330,21 @@ class ChannelContextTests(unittest.IsolatedAsyncioTestCase):
         # Bot is mentioned -> must return True
         self.assertTrue(await is_message_for_bot(msg))
 
+    async def test_is_message_for_bot_reuses_loaded_reference(self):
+        msg = MagicMock()
+        msg.mentions = []
+        msg.reference = MagicMock()
+        msg.reference.resolved = None
+        msg.reference.message_id = 123
+        msg.channel.fetch_message = AsyncMock(
+            side_effect=AssertionError("reference should not be fetched twice")
+        )
+        other_human = MagicMock(spec=discord.Message)
+        other_human.author.id = 8888
+
+        self.assertFalse(await is_message_for_bot(msg, ref_msg=other_human))
+        msg.channel.fetch_message.assert_not_called()
+
 
 
 

@@ -9,7 +9,7 @@ import platform
 import time
 from collections import OrderedDict, deque
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 import discord
 import psutil

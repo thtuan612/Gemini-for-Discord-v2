@@ -228,6 +228,7 @@ async def save_history(key: HistoryKey, history: deque) -> None:
     ]
     raw = json.dumps(serializable, ensure_ascii=False)
     await db.save_history_raw(*key, raw)
+    _cache_put(key, history)
 
 
 async def delete_history(key: HistoryKey) -> None:

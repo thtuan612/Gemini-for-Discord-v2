@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import os
-from datetime import timedelta, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -10,12 +9,6 @@ from dotenv import load_dotenv
 load_dotenv()
 
 BASE_DIR = Path(__file__).resolve().parent
-
-try:
-    from zoneinfo import ZoneInfo
-    VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
-except Exception:
-    VN_TZ = timezone(timedelta(hours=7), name="Asia/Ho_Chi_Minh")
 
 
 def _int(name: str, default: int) -> int:

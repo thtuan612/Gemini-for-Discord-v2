@@ -3,47 +3,7 @@ from __future__ import annotations
 
 import os
 import re
-from datetime import datetime, timedelta, timezone
-
 import psutil
-
-from config import VN_TZ
-
-
-def next_run_utc(
-    hour: int,
-    minute: int,
-    after: datetime | None = None,
-) -> datetime:
-    """Thời điểm UTC kế tiếp khớp giờ:phút VN."""
-    now_vn = (after or datetime.now(timezone.utc)).astimezone(VN_TZ)
-
-    candidate = now_vn.replace(
-        hour=hour,
-        minute=minute,
-        second=0,
-        microsecond=0,
-    )
-
-    if candidate <= now_vn:
-        candidate += timedelta(days=1)
-
-    return candidate.astimezone(timezone.utc)
-
-
-def parse_hhmm(value: str) -> tuple[int, int] | None:
-    """Chuyển HH:MM thành (hour, minute)."""
-    try:
-        h, m = value.strip().split(":")
-        hour = int(h)
-        minute = int(m)
-    except (ValueError, AttributeError):
-        return None
-
-    if 0 <= hour <= 23 and 0 <= minute <= 59:
-        return hour, minute
-
-    return None
 
 
 def split_message(text: str, limit: int = 1900) -> list[str]:

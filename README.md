@@ -190,7 +190,7 @@ python -m unittest tests/test_core.py -v
 
 - **Bảo mật bí mật:** File `.env` và các tệp dữ liệu SQLite (`*.db`, `*.db-wal`) đã được cấu hình trong `.gitignore` để không bao giờ bị lộ lên Git repository.
 - **Tối ưu bộ nhớ cache:** Áp dụng LRU có TTL 5 phút cho lịch sử chat; dữ liệu cũ được nạp lại từ SQLite thay vì giữ vô thời hạn trong RAM.
-- **Quyền riêng tư dữ liệu:** `/chat` không đọc lịch sử kênh theo mặc định; retention tự động xóa lịch sử sau 30 ngày, SQLite bật `secure_delete` và checkpoint WAL sau thao tác xóa.
+- **Quyền riêng tư dữ liệu:** `/chat` không đọc lịch sử kênh theo mặc định; retention tự động xóa lịch sử sau 30 ngày, SQLite bật `secure_delete`, giới hạn quyền file DB ở `0600` trên hệ thống POSIX và checkpoint WAL sau thao tác xóa.
 - **Xử lý bất đồng bộ chuẩn mực:** Mọi thao tác I/O với database và filesystem đều được đưa vào thread pool (`asyncio.to_thread`), tránh block event loop chính của Discord.
 
 ---

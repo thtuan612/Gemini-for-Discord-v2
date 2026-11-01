@@ -5,7 +5,6 @@ import functools
 import json
 import logging
 import os
-import platform
 import time
 from collections import OrderedDict, deque
 from contextlib import asynccontextmanager
@@ -22,13 +21,9 @@ import config
 import literouter
 from channel_context import ChannelContext, REFERENCE_UNSET
 import botinfo
-from botinfo import BotInfoMainView, _get_app_disk_size, build_botinfo_embed
+from botinfo import BotInfoMainView, build_botinfo_embed
 from db import Database
 from utils import (
-    format_bytes,
-    format_uptime,
-    get_dir_size,
-    get_memory_limit_bytes,
     is_trivial_message,
     split_message,
 )

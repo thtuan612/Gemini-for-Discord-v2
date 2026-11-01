@@ -148,10 +148,7 @@ Lệnh `/botinfo` cung cấp giao diện quản trị trực quan với các th�
 2. **Quản lý Auto-Chat:**
    - Chọn nhanh bất kỳ kênh text nào qua menu chọn kênh (`ChannelSelect`) để bật/tắt.
    - Nút bật/tắt nhanh ngay tại kênh đang mở bảng điều khiển.
-3. **Quản lý Server Được Phép (`ALLOWED_GUILD_IDS`):**
-   - Xem danh sách server đang được cấp phép hoạt động.
-   - Thêm server hiện tại hoặc thêm server từ xa thông qua Modal nhập ID.
-   - Gỡ quyền server hoặc mở khóa toàn bộ trực tiếp trên Discord.
+   - Danh sách kênh được lưu trong SQLite (`DB_PATH`) và tự nạp lại khi khởi động; `AUTO_CHAT_CHANNEL_IDS` chỉ là danh sách bật sẵn bổ sung.
 
 ---
 

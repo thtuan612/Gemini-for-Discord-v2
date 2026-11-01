@@ -512,5 +512,50 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(cache, os.path.join("/data", "literouter_models.json"))
 
 
+class AutoChatPersistenceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_channels_survive_restart_even_if_only_db_file_is_kept(self):
+        import shutil
+
+        from db import Database
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "conversations.db")
+            db = Database(path)
+            await db.init()
+            await db.add_auto_chat_channel(111, 1, 9)
+            await db.add_auto_chat_channel(222, 1, 9)
+            await db.remove_auto_chat_channel(222)
+            # Mô phỏng tắt đột ngột (không close) và chỉ giữ lại file .db chính, không có -wal/-shm.
+            copy = os.path.join(tmp, "copied.db")
+            shutil.copyfile(path, copy)
+            db2 = Database(copy)
+            await db2.init()
+            self.assertEqual(await db2.load_auto_chat_channels(), [111])
+            await db2.close()
+            await db.close()
+
+    async def test_channels_survive_normal_reopen(self):
+        from db import Database
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "conversations.db")
+            db = Database(path)
+            await db.init()
+            await db.add_auto_chat_channel(333, 1, 9)
+            await db.close()
+            db2 = Database(path)
+            await db2.init()
+            self.assertEqual(await db2.load_auto_chat_channels(), [333])
+            await db2.close()
+
+    def test_botinfo_has_no_allowed_guild_controls(self):
+        import inspect
+
+        source = inspect.getsource(bot)
+        for name in ("AllowedGuildsManageView", "AddGuildModal", "RemoveGuildModal", "go_allowed_guilds"):
+            self.assertNotIn(name, source)
+        self.assertNotIn("Giới hạn server", source)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -127,7 +127,13 @@ def build_activity() -> discord.BaseActivity:
 class GeminiBot(commands.Bot):
     async def setup_hook(self) -> None:
         await db.init()
-        auto_chat_channels.update(await db.load_auto_chat_channels())
+        db_channels = await db.load_auto_chat_channels()
+        auto_chat_channels.update(db_channels)
+        log.info(
+            "Auto-chat: %d kênh từ DB (%s) + %d kênh từ .env → tổng %d kênh",
+            len(db_channels), os.path.abspath(config.DB_PATH), len(config.AUTO_CHAT_CHANNEL_IDS),
+            len(auto_chat_channels),
+        )
         allowed_guild_ids.update(await db.load_allowed_guilds())
         if config.SYNC_ON_START:
             try:
@@ -1267,12 +1273,6 @@ async def build_botinfo_embed(guild: discord.Guild | None) -> discord.Embed:
         guild_channel_ids = {c.id for c in guild.text_channels}
         guild_autochat_count = len(guild_channel_ids & auto_chat_channels)
 
-    allowed_text = (
-        f"{len(allowed_guild_ids)} server (đang khóa)"
-        if allowed_guild_ids
-        else "Không giới hạn (mở tất cả)"
-    )
-
     description = (
         f"🏓 **Ping:** {round(bot.latency * 1000)}ms\n"
         f"⏱️ **Uptime:** {format_uptime(uptime)}\n"
@@ -1285,9 +1285,8 @@ async def build_botinfo_embed(guild: discord.Guild | None) -> discord.Embed:
         f"📘 **discord.py:** {discord.__version__}\n"
         f"✨ **AI:** {describe_ai_providers()}\n"
         f"⏰ **Lịch nhắc đang chạy:** {active_reminders}\n"
-        f"📣 **Kênh auto-chat:** {len(auto_chat_channels)} kênh (Server này: {guild_autochat_count})\n"
-        f"🛡️ **Giới hạn server:** {allowed_text}\n\n"
-        "💡 *Dùng các nút bên dưới để đổi cài đặt Auto-Chat hoặc Server được phép.*"
+        f"📣 **Kênh auto-chat:** {len(auto_chat_channels)} kênh (Server này: {guild_autochat_count})\n\n"
+        "💡 *Dùng nút bên dưới để đổi cài đặt Auto-Chat.*"
     )
     embed = discord.Embed(
         title="📊 Bảng Điều Khiển & Thông Số Bot",
@@ -1332,50 +1331,6 @@ def build_autochat_embed(guild: discord.Guild, notice: str = "") -> discord.Embe
     return embed
 
 
-def build_allowed_guilds_embed(current_guild: discord.Guild, notice: str = "") -> discord.Embed:
-    desc_parts = []
-    if notice:
-        desc_parts.append(f"> 💬 **{notice}**\n")
-
-    if not allowed_guild_ids:
-        status_text = "🔓 **Đang mở cho TẤT CẢ server (Không giới hạn).**\nBot có thể hoạt động ở bất kỳ server nào được mời vào."
-    else:
-        server_lines = []
-        for gid in sorted(allowed_guild_ids):
-            g = bot.get_guild(gid)
-            tag = " `[.env]`" if gid in config.ALLOWED_GUILD_IDS else " `[DB]`"
-            if g:
-                server_lines.append(f"• **{g.name}** (`{gid}`){tag}")
-            else:
-                server_lines.append(f"• Server ID `{gid}` *(chưa tham gia)*{tag}")
-        status_text = (
-            f"🔒 **Đang giới hạn trong {len(allowed_guild_ids)} server:**\n"
-            + "\n".join(server_lines)
-        )
-
-    is_curr_allowed = (not allowed_guild_ids) or (current_guild.id in allowed_guild_ids)
-    curr_status = "✅ Được phép" if is_curr_allowed else "❌ Chưa cho phép"
-
-    desc_parts.append(
-        f"{status_text}\n\n"
-        f"🏠 **Server hiện tại:** **{current_guild.name}** (`{current_guild.id}`) — {curr_status}\n\n"
-        "📝 **Hướng dẫn:**\n"
-        "• **Thêm server này:** Cấp phép cho server bạn đang mở bảng điều khiển.\n"
-        "• **Thêm bằng ID:** Nhập ID của server khác để cấp quyền cho bot hoạt động.\n"
-        "• **Xóa server:** Chọn server từ menu hoặc nhập ID để gỡ quyền (không thể gỡ server từ `.env`).\n"
-        "• **Mở khóa tất cả:** Xóa danh sách hạn chế trong DB (mở cho mọi server)."
-    )
-    embed = discord.Embed(
-        title="🌐 Quản Lý Server Được Phép",
-        description="\n".join(desc_parts),
-        color=discord.Color.teal(),
-    )
-    if bot.user and bot.user.display_avatar:
-        embed.set_thumbnail(url=bot.user.display_avatar.url)
-    embed.set_footer(text="Quản lý danh sách server được phép hoạt động")
-    return embed
-
-
 class BotInfoMainView(discord.ui.View):
     def __init__(self, guild: discord.Guild | None):
         super().__init__(timeout=300)
@@ -1391,12 +1346,6 @@ class BotInfoMainView(discord.ui.View):
     async def go_autochat(self, interaction: discord.Interaction, button: discord.ui.Button):
         embed = build_autochat_embed(interaction.guild)
         view = AutoChatManageView(interaction.guild)
-        await interaction.response.edit_message(embed=embed, view=view)
-
-    @discord.ui.button(label="🌐 Server Được Phép", style=discord.ButtonStyle.secondary)
-    async def go_allowed_guilds(self, interaction: discord.Interaction, button: discord.ui.Button):
-        embed = build_allowed_guilds_embed(interaction.guild)
-        view = AllowedGuildsManageView(interaction.guild)
         await interaction.response.edit_message(embed=embed, view=view)
 
     @discord.ui.button(label="🔄 Làm mới", style=discord.ButtonStyle.success)
@@ -1504,173 +1453,7 @@ class AutoChatManageView(discord.ui.View):
         await interaction.response.edit_message(embed=embed, view=view)
 
 
-class AddGuildModal(discord.ui.Modal, title="Thêm Server Được Phép"):
-    guild_id_input = discord.ui.TextInput(
-        label="ID của Server Discord",
-        placeholder="VD: 123456789012345678",
-        min_length=17,
-        max_length=22,
-        required=True,
-    )
-
-    def __init__(self, parent_view: discord.ui.View, current_guild: discord.Guild):
-        super().__init__()
-        self.parent_view = parent_view
-        self.current_guild = current_guild
-
-    async def on_submit(self, interaction: discord.Interaction):
-        raw = self.guild_id_input.value.strip()
-        if not raw.isdigit():
-            await interaction.response.send_message("❌ ID server phải là chuỗi số.", ephemeral=True)
-            return
-        gid = int(raw)
-        if gid in allowed_guild_ids:
-            notice = f"ℹ️ Server ID `{gid}` đã có trong danh sách được phép rồi."
-        else:
-            await db.add_allowed_guild(gid, interaction.user.id)
-            allowed_guild_ids.add(gid)
-            target = bot.get_guild(gid)
-            gname = f"**{target.name}** " if target else ""
-            notice = f"✅ Đã thêm server {gname}(`{gid}`) vào danh sách được phép."
-
-        embed = build_allowed_guilds_embed(self.current_guild, notice=notice)
-        view = AllowedGuildsManageView(self.current_guild)
-        await interaction.response.edit_message(embed=embed, view=view)
-
-
-class RemoveGuildModal(discord.ui.Modal, title="Xóa Server Khỏi Danh Sách"):
-    guild_id_input = discord.ui.TextInput(
-        label="ID của Server cần xóa",
-        placeholder="VD: 123456789012345678",
-        min_length=17,
-        max_length=22,
-        required=True,
-    )
-
-    def __init__(self, parent_view: discord.ui.View, current_guild: discord.Guild):
-        super().__init__()
-        self.parent_view = parent_view
-        self.current_guild = current_guild
-
-    async def on_submit(self, interaction: discord.Interaction):
-        raw = self.guild_id_input.value.strip()
-        if not raw.isdigit():
-            await interaction.response.send_message("❌ ID server phải là chuỗi số.", ephemeral=True)
-            return
-        gid = int(raw)
-        removed = await db.remove_allowed_guild(gid)
-        was_in_memory = gid in allowed_guild_ids
-        allowed_guild_ids.discard(gid)
-
-        if gid in config.ALLOWED_GUILD_IDS:
-            allowed_guild_ids.add(gid)
-            notice = f"⚠️ Server `{gid}` nằm trong `ALLOWED_GUILD_IDS` (.env), không thể xóa qua giao diện."
-        elif removed or was_in_memory:
-            notice = f"🗑️ Đã xóa server `{gid}` khỏi danh sách được phép."
-        else:
-            notice = f"ℹ️ Server `{gid}` không có trong danh sách được phép."
-
-        embed = build_allowed_guilds_embed(self.current_guild, notice=notice)
-        view = AllowedGuildsManageView(self.current_guild)
-        await interaction.response.edit_message(embed=embed, view=view)
-
-
-class AllowedGuildsSelect(discord.ui.Select):
-    def __init__(self, current_guild: discord.Guild):
-        options = []
-        for gid in sorted(allowed_guild_ids)[:25]:
-            g = bot.get_guild(gid)
-            name = g.name[:90] if g else f"Server {gid}"
-            tag = " [.env]" if gid in config.ALLOWED_GUILD_IDS else " [DB]"
-            options.append(
-                discord.SelectOption(
-                    label=f"{name}{tag}"[:100],
-                    value=str(gid),
-                    description=f"ID: {gid}",
-                )
-            )
-        super().__init__(
-            placeholder="Chọn server để gỡ bỏ quyền...",
-            min_values=1,
-            max_values=1,
-            options=options,
-            row=0,
-        )
-        self.current_guild = current_guild
-
-    async def callback(self, interaction: discord.Interaction):
-        gid = int(self.values[0])
-        if gid in config.ALLOWED_GUILD_IDS:
-            notice = f"⚠️ Server `{gid}` nằm trong `ALLOWED_GUILD_IDS` (.env), không thể xóa qua giao diện."
-        else:
-            await db.remove_allowed_guild(gid)
-            allowed_guild_ids.discard(gid)
-            g = bot.get_guild(gid)
-            name = f"**{g.name}** " if g else ""
-            notice = f"🗑️ Đã xóa server {name}(`{gid}`) khỏi danh sách được phép."
-
-        embed = build_allowed_guilds_embed(self.current_guild, notice=notice)
-        view = AllowedGuildsManageView(self.current_guild)
-        await interaction.response.edit_message(embed=embed, view=view)
-
-
-class AllowedGuildsManageView(discord.ui.View):
-    def __init__(self, guild: discord.Guild):
-        super().__init__(timeout=300)
-        self.guild = guild
-        if allowed_guild_ids:
-            self.add_item(AllowedGuildsSelect(guild))
-
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if not is_privileged(interaction.user):
-            await interaction.response.send_message("Lệnh này chỉ Admin/Owner mới dùng được nhé.", ephemeral=True)
-            return False
-        return True
-
-    @discord.ui.button(label="➕ Thêm server này", style=discord.ButtonStyle.success, row=1)
-    async def add_current_guild(self, interaction: discord.Interaction, button: discord.ui.Button):
-        gid = interaction.guild_id
-        if gid in allowed_guild_ids:
-            notice = f"ℹ️ Server này (**{interaction.guild.name}**) đã có trong danh sách được phép rồi."
-        else:
-            await db.add_allowed_guild(gid, interaction.user.id)
-            allowed_guild_ids.add(gid)
-            notice = f"✅ Đã thêm server **{interaction.guild.name}** (`{gid}`) vào danh sách được phép."
-
-        embed = build_allowed_guilds_embed(interaction.guild, notice=notice)
-        view = AllowedGuildsManageView(interaction.guild)
-        await interaction.response.edit_message(embed=embed, view=view)
-
-    @discord.ui.button(label="➕ Thêm bằng ID", style=discord.ButtonStyle.primary, row=1)
-    async def add_guild_by_id(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(AddGuildModal(self, interaction.guild))
-
-    @discord.ui.button(label="➖ Xóa bằng ID", style=discord.ButtonStyle.danger, row=1)
-    async def remove_guild_by_id(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(RemoveGuildModal(self, interaction.guild))
-
-    @discord.ui.button(label="🔓 Mở khóa tất cả", style=discord.ButtonStyle.secondary, row=2)
-    async def unlock_all_guilds(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await db.clear_allowed_guilds()
-        allowed_guild_ids.clear()
-        allowed_guild_ids.update(config.ALLOWED_GUILD_IDS)
-        if config.ALLOWED_GUILD_IDS:
-            notice = "⚠️ Đã xóa các server thêm động; danh sách quay về mặc định từ `.env`."
-        else:
-            notice = "🔓 Đã mở khóa toàn bộ! Bot có thể hoạt động ở mọi server."
-
-        embed = build_allowed_guilds_embed(interaction.guild, notice=notice)
-        view = AllowedGuildsManageView(interaction.guild)
-        await interaction.response.edit_message(embed=embed, view=view)
-
-    @discord.ui.button(label="⬅️ Quay lại", style=discord.ButtonStyle.secondary, row=2)
-    async def back_to_main(self, interaction: discord.Interaction, button: discord.ui.Button):
-        embed = await build_botinfo_embed(interaction.guild)
-        view = BotInfoMainView(interaction.guild)
-        await interaction.response.edit_message(embed=embed, view=view)
-
-
-@bot.tree.command(name="botinfo", description="[Admin/Owner] Bảng điều khiển xem & quản lý bot (Auto-Chat, Server)")
+@bot.tree.command(name="botinfo", description="[Admin/Owner] Bảng điều khiển xem & quản lý bot (Auto-Chat)")
 async def botinfo_command(interaction: discord.Interaction):
     if not is_privileged(interaction.user):
         await interaction.response.send_message("Lệnh này chỉ Admin/Owner mới dùng được nhé.", ephemeral=True)

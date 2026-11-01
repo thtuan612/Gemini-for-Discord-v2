@@ -104,17 +104,24 @@ class Database:
         rows = await self._q("SELECT channel_id FROM auto_chat_channels", mode="all")
         return [r[0] for r in rows]
 
+    async def _checkpoint(self) -> None:
+        """Ghi hẳn WAL vào file .db chính, để cài đặt quan trọng không phụ thuộc vào file -wal
+        (host có thể chỉ giữ/sao lưu file .db hoặc tắt tiến trình đột ngột)."""
+        await self._q("PRAGMA wal_checkpoint(TRUNCATE)", mode="all")
+
     async def add_auto_chat_channel(self, channel_id: int, guild_id: int, added_by: int) -> bool:
         rowcount, _ = await self._q(
             "INSERT OR IGNORE INTO auto_chat_channels (channel_id, guild_id, added_by) VALUES (?, ?, ?)",
             (channel_id, guild_id, added_by),
         )
+        await self._checkpoint()
         return rowcount > 0
 
     async def remove_auto_chat_channel(self, channel_id: int) -> bool:
         rowcount, _ = await self._q(
             "DELETE FROM auto_chat_channels WHERE channel_id = ?", (channel_id,)
         )
+        await self._checkpoint()
         return rowcount > 0
 
     async def list_auto_chat_channels(self, guild_id: int) -> list[int]:

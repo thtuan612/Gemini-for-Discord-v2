@@ -636,6 +636,8 @@ async def on_ready():
 
 # Channel context được quản lý độc lập để bot.py chỉ điều phối luồng xử lý.
 channel_context_manager = ChannelContext(bot, log)
+# Giữ alias để tương thích với test và code nội bộ đang truy cập cache trực tiếp.
+_channel_message_cache = channel_context_manager._messages
 
 
 def record_channel_message(message: discord.Message | None) -> None:

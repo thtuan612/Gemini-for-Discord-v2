@@ -515,11 +515,6 @@ async def ask_gemini(
         return MSG_NO_PROVIDER
 
     history = await load_history(key)
-    contents = list(history)
-    user_parts = [types.Part(text=untrusted_user_payload)]
-    if image_parts:
-        user_parts.extend(image_parts)
-    contents.append(types.Content(role="user", parts=user_parts))
 
     system_parts = [config.SYSTEM_PROMPT, PROMPT_SECURITY_INSTRUCTION]
     if privileged:
@@ -536,6 +531,12 @@ async def ask_gemini(
         server_context=server_context,
         channel_context=channel_context,
     )
+
+    contents = list(history)
+    user_parts = [types.Part(text=untrusted_user_payload)]
+    if image_parts:
+        user_parts.extend(image_parts)
+    contents.append(types.Content(role="user", parts=user_parts))
     cfg_kwargs: dict = {
         "system_instruction": system_text,
         "max_output_tokens": config.MAX_OUTPUT_TOKENS,

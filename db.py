@@ -53,6 +53,11 @@ class Database:
         conn.execute("PRAGMA wal_autocheckpoint=1000")
         conn.execute("PRAGMA journal_size_limit=16777216")
         conn.executescript(SCHEMA)
+        if self.path != ":memory:" and os.path.isfile(self.path):
+            try:
+                os.chmod(self.path, 0o600)
+            except OSError as e:
+                log.warning("Không thể giới hạn quyền truy cập file DB (%s)", type(e).__name__)
         # Dọn bảng Reminder cũ nếu DB được nâng cấp từ phiên bản trước.
         # Các bảng dữ liệu khác được giữ nguyên.
         conn.execute("DROP TABLE IF EXISTS reminders")
@@ -101,9 +106,10 @@ class Database:
         return [r[0] for r in rows]
 
     async def _checkpoint(self) -> None:
-        """Ghi hẳn WAL vào file .db chính, để cài đặt quan trọng không phụ thuộc vào file -wal
-        (host có thể chỉ giữ/sao lưu file .db hoặc tắt tiến trình đột ngột)."""
-        await self._q("PRAGMA wal_checkpoint(TRUNCATE)", mode="all")
+        """Đẩy WAL vào DB chính và thu gọn WAL sau các thao tác xóa/cập nhật cấu hình."""
+        result = await self._q("PRAGMA wal_checkpoint(TRUNCATE)", mode="one")
+        if result and result[0]:
+            log.warning("WAL checkpoint đang bận; SQLite sẽ hoàn tất ở lần checkpoint sau")
 
     async def add_auto_chat_channel(self, channel_id: int, guild_id: int, added_by: int) -> bool:
         rowcount, _ = await self._q(
@@ -147,10 +153,11 @@ class Database:
         )
 
     async def delete_history(self, guild_id: int, user_id: int) -> None:
-        await self._q(
+        rowcount, _ = await self._q(
             "DELETE FROM chat_history WHERE guild_id = ? AND user_id = ?", (guild_id, user_id)
         )
-        await self._checkpoint()
+        if rowcount:
+            await self._checkpoint()
 
     async def purge_old_history(self, days: int) -> int:
         if days <= 0:

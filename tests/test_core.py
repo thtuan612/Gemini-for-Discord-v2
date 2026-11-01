@@ -166,7 +166,7 @@ class ChannelContextTests(unittest.IsolatedAsyncioTestCase):
             with unittest.mock.patch("botinfo.time.monotonic", return_value=100.0):
                 with unittest.mock.patch("botinfo.get_dir_size", return_value=2048) as scan:
                     self.assertEqual(await botinfo_module._get_app_disk_size(), 2048)
-                    self.assertEqual(await bot_module._get_app_disk_size(), 2048)
+                    self.assertEqual(await botinfo_module._get_app_disk_size(), 2048)
                     scan.assert_called_once_with(botinfo_module._APP_DIR)
         finally:
             botinfo_module._app_disk_size_cache = original_cache

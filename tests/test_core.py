@@ -47,6 +47,12 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(await self.db.load_history_raw(1, 10))
         self.assertEqual(await self.db.load_history_raw(2, 10), "B")
 
+    async def test_purge_disabled_for_zero_or_negative_days(self):
+        await self.db.save_history_raw(1, 1, "keep")
+        self.assertEqual(await self.db.purge_old_history(0), 0)
+        self.assertEqual(await self.db.purge_old_history(-1), 0)
+        self.assertEqual(await self.db.load_history_raw(1, 1), "keep")
+
     async def test_purge_old_history(self):
         await self.db.save_history_raw(1, 1, "old")
         old = (datetime.now(timezone.utc) - timedelta(days=40)).isoformat()
@@ -83,6 +89,14 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
     async def test_concurrent_access(self):
         await asyncio.gather(*(self.db.save_history_raw(1, i, str(i)) for i in range(50)))
         self.assertEqual(await self.db.load_history_raw(1, 49), "49")
+
+    async def test_database_creates_parent_directory(self):
+        nested_path = os.path.join(self.tmp.name, "nested", "data", "bot.db")
+        nested = Database(nested_path)
+        await nested.init()
+        await nested.save_history_raw(2, 3, "nested-ok")
+        self.assertEqual(await nested.load_history_raw(2, 3), "nested-ok")
+        await nested.close()
 
     async def test_init_removes_legacy_reminders_without_touching_other_data(self):
         path = os.path.join(self.tmp.name, "old.db")

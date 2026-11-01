@@ -5,7 +5,7 @@ import asyncio
 import logging
 import sqlite3
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 log = logging.getLogger("discord-ai-bot.db")
 

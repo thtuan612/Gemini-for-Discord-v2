@@ -515,23 +515,26 @@ async def ask_gemini(
 
     history = await load_history(key)
     contents = list(history)
-    user_parts = [types.Part(text=user_message)]
+    user_parts = [types.Part(text=untrusted_user_payload)]
     if image_parts:
         user_parts.extend(image_parts)
     contents.append(types.Content(role="user", parts=user_parts))
 
-    system_parts = [config.SYSTEM_PROMPT]
+    system_parts = [config.SYSTEM_PROMPT, PROMPT_SECURITY_INSTRUCTION]
     if privileged:
         system_parts.append(config.PRIVILEGED_NOTE)
-    if server_context:
-        system_parts.append(server_context)
-    if channel_context:
-        system_parts.append(channel_context)
     if auto_channel:
-        # Nằm trong system instruction, KHÔNG lưu vào lịch sử hội thoại.
+        # Đây là chỉ thị điều khiển của ứng dụng, không phải dữ liệu Discord.
         system_parts.append(RELEVANCE_INSTRUCTION)
 
     system_text = "\n\n".join(system_parts)
+    # Context Discord và nội dung người dùng luôn nằm ở user role, không được
+    # ghép vào system_instruction vì chúng có thể chứa prompt injection.
+    untrusted_user_payload = build_untrusted_payload(
+        user_message=user_message,
+        server_context=server_context,
+        channel_context=channel_context,
+    )
     cfg_kwargs: dict = {
         "system_instruction": system_text,
         "max_output_tokens": config.MAX_OUTPUT_TOKENS,
@@ -561,7 +564,7 @@ async def ask_gemini(
             call = functools.partial(_call_gemini, model, contents, gen_config)
         else:
             call = functools.partial(
-                _call_literouter, model, system_text, history_pairs, user_message, images
+                _call_literouter, model, system_text, history_pairs, untrusted_user_payload, images
             )
         try:
             reply, truncated = await _attempt(call, can_fallback=can_fallback)

@@ -44,7 +44,14 @@ class Database:
     def _init_sync(self) -> None:
         parent = os.path.dirname(os.path.abspath(self.path))
         os.makedirs(parent, exist_ok=True)
-        conn = sqlite3.connect(self.path, check_same_thread=False, timeout=10)
+        # WAL/SHM có thể chứa nội dung hội thoại. Dùng umask riêng lúc tạo
+        # database để các file phụ cũng không bị mở quyền theo umask hệ thống.
+        previous_umask = os.umask(0o077) if os.name == "posix" else None
+        try:
+            conn = sqlite3.connect(self.path, check_same_thread=False, timeout=10)
+        finally:
+            if previous_umask is not None:
+                os.umask(previous_umask)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA busy_timeout=10000")
         conn.execute("PRAGMA journal_mode=WAL")

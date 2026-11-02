@@ -9,8 +9,15 @@ from datetime import datetime, timedelta, timezone
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from db import Database  # noqa: E402
+import config  # noqa: E402
 from utils import split_message  # noqa: E402
 from prompt_security import PROMPT_SECURITY_INSTRUCTION, build_untrusted_payload  # noqa: E402
+
+
+class ChannelContextConfigTests(unittest.TestCase):
+    def test_channel_context_is_enabled_by_default_with_five_messages(self):
+        self.assertTrue(config.CHAT_INCLUDE_CHANNEL_CONTEXT)
+        self.assertEqual(config.CHANNEL_HISTORY_LIMIT, 5)
 
 
 class UtilsTests(unittest.TestCase):

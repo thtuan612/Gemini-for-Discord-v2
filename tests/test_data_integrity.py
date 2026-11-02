@@ -10,6 +10,7 @@ import sys
 import tempfile
 import unittest
 from collections import deque
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -117,6 +118,191 @@ class DatabaseFilePermissionTests(unittest.IsolatedAsyncioTestCase):
         await db.init()
         self.addAsyncCleanup(db.close)
         self.assertEqual(file_mode(self.tmp.name), 0o755)
+
+
+class DatabaseCorruptionRecoveryTests(unittest.IsolatedAsyncioTestCase):
+    """DB hỏng không được làm bot không khởi động được, và không được mất dữ liệu cấu hình nếu cứu được."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.path = os.path.join(self.tmp.name, "bot.db")
+
+    def _quarantined(self):
+        return sorted(
+            n for n in os.listdir(self.tmp.name)
+            if ".corrupt-" in n and not n.endswith(("-wal", "-shm"))
+        )
+
+    async def _open(self):
+        db = Database(self.path)
+        await db.init()
+        self.addAsyncCleanup(db.close)
+        return db
+
+    async def test_healthy_database_is_not_touched(self):
+        db = await self._open()
+        await db.add_auto_chat_channel(7, 1, 1)
+        await db.close()
+        db2 = await self._open()
+        self.assertIsNone(db2.recovered_from)
+        self.assertEqual(await db2.load_auto_chat_channels(), [7])
+        self.assertEqual(self._quarantined(), [])
+
+    async def test_garbage_file_is_quarantined_and_bot_can_start(self):
+        garbage = b"khong phai sqlite " * 300
+        with open(self.path, "wb") as f:
+            f.write(garbage)
+
+        db = await self._open()
+
+        self.assertIsNotNone(db.recovered_from)
+        self.assertEqual(self._quarantined(), [os.path.basename(db.recovered_from)])
+        with open(db.recovered_from, "rb") as f:
+            self.assertEqual(f.read(), garbage, "file hỏng phải được giữ nguyên để điều tra, không bị xóa/sửa")
+        # DB mới dùng được bình thường.
+        self.assertTrue(await db.add_auto_chat_channel(5, 1, 1))
+        await db.save_history_raw(1, 2, "[]")
+        self.assertEqual(await db.load_auto_chat_channels(), [5])
+
+    @POSIX_ONLY
+    async def test_quarantined_copy_and_new_db_are_private(self):
+        with open(self.path, "wb") as f:
+            f.write(b"x" * 5000)
+        os.chmod(self.path, 0o644)
+        db = await self._open()
+        await db.save_history_raw(1, 2, "[]")
+        self.assertEqual(file_mode(db.recovered_from), 0o600)
+        for suffix in ("", "-wal", "-shm"):
+            self.assertEqual(file_mode(self.path + suffix), 0o600, suffix or "db")
+
+    def test_quarantine_moves_wal_and_shm_together_with_db(self):
+        # Gọi trực tiếp: khi mở thất bại, SQLite có thể tự xóa WAL sai header, nên không dựa vào init().
+        for suffix, data in (("", b"db"), ("-wal", b"wal cu"), ("-shm", b"shm cu")):
+            with open(self.path + suffix, "wb") as f:
+                f.write(data)
+        database = Database(self.path)
+        database._quarantine_sync(sqlite3.DatabaseError("file is not a database"))
+        target = database.recovered_from
+        for suffix, data in (("", b"db"), ("-wal", b"wal cu"), ("-shm", b"shm cu")):
+            self.assertFalse(os.path.exists(self.path + suffix), f"{suffix or 'db'} cũ không được ở lại vị trí chính")
+            with open(target + suffix, "rb") as f:
+                self.assertEqual(f.read(), data)
+
+    async def test_garbage_db_with_garbage_wal_starts_with_clean_database(self):
+        with open(self.path, "wb") as f:
+            f.write(b"y" * 5000)
+        with open(self.path + "-wal", "wb") as f:
+            f.write(b"wal cu khong lien quan")
+        db = await self._open()
+        self.assertEqual(await db.load_auto_chat_channels(), [])
+        self.assertTrue(await db.add_auto_chat_channel(3, 1, 1))
+
+    async def test_config_tables_are_salvaged_when_only_history_pages_are_corrupt(self):
+        db = await self._open()
+        await db.add_auto_chat_channel(111, 1, 9)
+        await db.add_allowed_guild(222, 9)
+        big = json.dumps([{"role": "user", "text": "x" * 3000}])
+        for uid in range(40):
+            await db.save_history_raw(1, uid, big)
+        await db.close()  # checkpoint WAL vào file chính
+        size = os.path.getsize(self.path)
+        with open(self.path, "r+b") as f:  # phá các trang cuối file (dữ liệu chat_history)
+            f.seek(size - 4096 * 6)
+            f.write(os.urandom(4096 * 6))
+
+        db2 = await self._open()
+
+        self.assertIsNotNone(db2.recovered_from, "quick_check phải phát hiện trang hỏng")
+        self.assertEqual(await db2.load_auto_chat_channels(), [111])
+        self.assertEqual(await db2.load_allowed_guilds(), [222])
+
+    async def test_non_corruption_error_does_not_quarantine(self):
+        db = await self._open()
+        await db.add_auto_chat_channel(1, 1, 1)
+        await db.close()
+        locked = sqlite3.OperationalError("database is locked")
+        with patch.object(Database, "_open_sync", side_effect=locked):
+            with self.assertRaises(sqlite3.OperationalError):
+                await Database(self.path).init()
+        self.assertEqual(self._quarantined(), [])
+        self.assertTrue(os.path.exists(self.path), "DB còn lành không được bị đổi tên chỉ vì lỗi tạm thời")
+        db2 = await self._open()
+        self.assertEqual(await db2.load_auto_chat_channels(), [1])
+
+    async def test_second_failure_after_recovery_is_raised_not_looped(self):
+        calls = []
+
+        def always_corrupt(self_):
+            calls.append(1)
+            raise sqlite3.DatabaseError("file is not a database")
+
+        with open(self.path, "wb") as f:
+            f.write(b"z" * 2000)
+        with patch.object(Database, "_open_sync", always_corrupt):
+            with self.assertRaises(sqlite3.DatabaseError):
+                await Database(self.path).init()
+        self.assertEqual(len(calls), 2, "chỉ được thử lại đúng 1 lần sau khi cách ly")
+
+    async def test_failed_open_closes_connection_and_leaves_db_unset(self):
+        with open(self.path, "wb") as f:
+            f.write(b"q" * 3000)
+        database = Database(self.path)
+        with self.assertRaises(sqlite3.DatabaseError):
+            database._open_sync()
+        self.assertIsNone(database._conn)
+
+    async def test_only_latest_quarantined_copies_are_kept(self):
+        from db import MAX_QUARANTINED_DBS
+        for i in range(MAX_QUARANTINED_DBS + 2):
+            old = f"{self.path}.corrupt-20200101T00000{i}Z"
+            with open(old, "wb") as f:
+                f.write(b"old")
+            with open(old + "-wal", "wb") as f:
+                f.write(b"old")
+        with open(self.path, "wb") as f:
+            f.write(b"w" * 3000)
+
+        db = await self._open()
+
+        kept = self._quarantined()
+        self.assertEqual(len(kept), MAX_QUARANTINED_DBS)
+        self.assertIn(os.path.basename(db.recovered_from), kept, "bản mới nhất phải còn")
+        self.assertNotIn("bot.db.corrupt-20200101T000000Z", kept)
+        self.assertFalse(os.path.exists(f"{self.path}.corrupt-20200101T000000Z-wal"))
+
+    async def test_two_recoveries_in_same_second_do_not_overwrite(self):
+        fixed = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        for _ in range(2):
+            with open(self.path, "wb") as f:
+                f.write(b"a" * 3000)
+            with patch("db.datetime") as fake:
+                fake.now.return_value = fixed
+                db = Database(self.path)
+                await db.init()
+            await db.close()
+            os.remove(self.path)
+            for suffix in ("-wal", "-shm"):
+                if os.path.exists(self.path + suffix):
+                    os.remove(self.path + suffix)
+        self.assertEqual(len(self._quarantined()), 2)
+
+    def test_is_corruption_classification(self):
+        from db import DatabaseCorruptError, _is_corruption
+        self.assertTrue(_is_corruption(DatabaseCorruptError("quick_check")))
+        self.assertTrue(_is_corruption(sqlite3.DatabaseError("file is not a database")))
+        self.assertTrue(_is_corruption(sqlite3.DatabaseError("database disk image is malformed")))
+        self.assertFalse(_is_corruption(sqlite3.OperationalError("database is locked")))
+        self.assertFalse(_is_corruption(sqlite3.OperationalError("unable to open database file")))
+        self.assertFalse(_is_corruption(sqlite3.OperationalError("disk I/O error")))
+        self.assertFalse(_is_corruption(OSError("denied")))
+
+    async def test_quarantine_is_logged_as_error(self):
+        with open(self.path, "wb") as f:
+            f.write(b"l" * 3000)
+        with self.assertLogs("discord-ai-bot.db", level="ERROR") as logs:
+            await self._open()
+        self.assertTrue(any("bị hỏng" in line for line in logs.output))
 
 
 class DatabaseTransactionTests(unittest.IsolatedAsyncioTestCase):

@@ -89,7 +89,7 @@ Chi tiết đầy đủ các tùy chọn cấu hình trong [`.env.example`](.env
 ### Gemini AI
 - `GEMINI_ENABLED`: Bật/tắt provider Gemini (mặc định: `true`).
 - `GEMINI_MODEL`: Model Gemini chính (mặc định: `gemini-3.5-flash-lite`).
-- `GEMINI_FALLBACK_MODELS`: Các model dự phòng, cách nhau bằng dấu phẩy. Bot thử lần lượt khi model trước gặp quota, 429 hoặc lỗi tạm thời (5xx, timeout).
+- `GEMINI_FALLBACK_MODELS`: Các model dự phòng, cách nhau bằng dấu phẩy. Bot thử lần lượt khi model trước gặp quota, 429 hoặc lỗi tạm thời (5xx, timeout). Model sai tên / không tồn tại / không có quyền (404, 403, 400 "model ...") cũng được bỏ qua sang model kế tiếp và bị loại tạm 10 phút; lúc khởi động bot ghi cảnh báo nếu model không có trong danh sách của Google.
 - `MAX_OUTPUT_TOKENS`: Giới hạn token đầu ra (mặc định: `1024`).
 - `THINKING_LEVEL`: Mức suy nghĩ của mô hình (`minimal`, `low`, `medium`, `high`, hoặc để trống).
 - `GEMINI_TIMEOUT`: Thời gian chờ tối đa cho mỗi request (giây, mặc định: `30`).
@@ -115,7 +115,7 @@ Chi tiết đầy đủ các tùy chọn cấu hình trong [`.env.example`](.env
 - `STATUS_TYPE` & `STATUS_TEXT`: Trạng thái hoạt động hiển thị của bot (ví dụ: `playing`, `Where Winds Meet`).
 
 ### Cơ sở dữ liệu
-- `DB_PATH`: Đường dẫn file SQLite (mặc định: `conversations.db`).
+- `DB_PATH`: Đường dẫn file SQLite (mặc định: `conversations.db`). Nếu file bị hỏng, bot tự đổi tên thành `<DB_PATH>.corrupt-<thời gian>` (giữ tối đa 3 bản, quyền 0600), tạo DB mới và cố cứu lại danh sách kênh Auto-Chat / server được phép; lịch sử hội thoại trong file hỏng không khôi phục được. Lỗi tạm thời (khóa file, thiếu quyền, đầy ổ đĩa) KHÔNG kích hoạt cơ chế này.
 - `HISTORY_RETENTION_DAYS`: Tự động xóa lịch sử hội thoại sau N ngày (mặc định: `30`, `0` = giữ mãi).
 - `MAX_HISTORY_TURNS`: Số lượt hỏi-đáp tối đa nhớ cho mỗi người dùng (mặc định: `10`, tối đa `50`).
 - `MAX_HISTORY_CHARS`: Tổng số ký tự tối đa của lịch sử mỗi người dùng, vừa lưu DB vừa gửi cho AI (mặc định: `24000`, `0` = không giới hạn). Vượt quá thì lượt cũ nhất bị bỏ trước, lượt gần nhất luôn được giữ.

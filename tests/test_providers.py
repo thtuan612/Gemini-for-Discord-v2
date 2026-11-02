@@ -317,6 +317,8 @@ class FallbackTests(unittest.IsolatedAsyncioTestCase):
         self._set("LITEROUTER_API_KEY", None)
         self._set("LITEROUTER_MODEL", "")
 
+        bot._bad_models.clear()
+        self.addCleanup(bot._bad_models.clear)
         self.behaviors: dict[str, list] = {}
         self.calls: list[str] = []
 
@@ -375,6 +377,68 @@ class FallbackTests(unittest.IsolatedAsyncioTestCase):
         self.behaviors = {"g-main": [self._ClientError(400)], "g-fb": ["không được gọi"]}
         self.assertEqual(await bot.ask_gemini((1, 6), "hi"), bot.MSG_API_ERROR)
         self.assertEqual(self.calls, ["g-main"])
+
+    def _model_error(self, code, text):
+        err = self._ClientError(code)
+        err.args = (text,)
+        return err
+
+    async def test_404_model_not_found_falls_back_to_next_model(self):
+        self.behaviors = {"g-main": [self._ClientError(404)], "g-fb": ["ok từ dự phòng"]}
+        self.assertEqual(await bot.ask_gemini((1, 20), "hi"), "ok từ dự phòng")
+        self.assertEqual(self.calls, ["g-main", "g-fb"])
+        self.sleep.assert_not_called()
+
+    async def test_400_with_model_name_error_falls_back(self):
+        err = self._model_error(400, "400 INVALID_ARGUMENT. unexpected model name format")
+        self.behaviors = {"g-main": [err], "g-fb": ["ok"]}
+        self.assertEqual(await bot.ask_gemini((1, 21), "hi"), "ok")
+        self.assertEqual(self.calls, ["g-main", "g-fb"])
+
+    async def test_403_permission_denied_on_model_falls_back(self):
+        self.behaviors = {"g-main": [self._ClientError(403)], "g-fb": ["ok"]}
+        self.assertEqual(await bot.ask_gemini((1, 22), "hi"), "ok")
+
+    async def test_400_unrelated_to_model_still_stops_immediately(self):
+        err = self._model_error(400, "400 INVALID_ARGUMENT. image payload too large")
+        self.behaviors = {"g-main": [err], "g-fb": ["không được gọi"]}
+        self.assertEqual(await bot.ask_gemini((1, 23), "hi"), bot.MSG_API_ERROR)
+        self.assertEqual(self.calls, ["g-main"])
+        self.assertEqual(bot._bad_models, {}, "lỗi do nội dung request không được loại model")
+
+    async def test_bad_model_is_skipped_on_following_requests(self):
+        self.behaviors = {"g-main": [self._ClientError(404)], "g-fb": ["một", "hai"]}
+        self.assertEqual(await bot.ask_gemini((1, 24), "a"), "một")
+        self.assertEqual(await bot.ask_gemini((1, 25), "b"), "hai")
+        self.assertEqual(self.calls, ["g-main", "g-fb", "g-fb"], "lần 2 không được gọi lại model sai")
+
+    async def test_bad_model_is_retried_after_cooldown(self):
+        self.behaviors = {"g-main": [self._ClientError(404), "main sống lại"], "g-fb": ["dự phòng"]}
+        await bot.ask_gemini((1, 26), "a")
+        bot._bad_models[("gemini", "g-main")] = bot.time.monotonic() - 1  # hết hạn
+        self.assertEqual(await bot.ask_gemini((1, 27), "b"), "main sống lại")
+        self.assertNotIn(("gemini", "g-main"), bot._bad_models)
+
+    async def test_all_models_bad_returns_error_and_keeps_trying_next_request(self):
+        self.behaviors = {"g-main": [self._ClientError(404), self._ClientError(404)],
+                          "g-fb": [self._ClientError(404), self._ClientError(404)]}
+        self.assertEqual(await bot.ask_gemini((1, 28), "a"), bot.MSG_API_ERROR)
+        # Cả hai đang cooldown: vẫn phải thử lại (không được báo "chưa có provider" vĩnh viễn).
+        self.assertEqual(await bot.ask_gemini((1, 29), "b"), bot.MSG_API_ERROR)
+        self.assertEqual(self.calls, ["g-main", "g-fb", "g-main", "g-fb"])
+
+    async def test_bad_gemini_models_fall_through_to_literouter(self):
+        chat = AsyncMock(return_value=("từ literouter", False))
+        self._enable_literouter(chat)
+        self.behaviors = {"g-main": [self._ClientError(404)], "g-fb": [self._ClientError(404)]}
+        self.assertEqual(await bot.ask_gemini((1, 30), "hi"), "từ literouter")
+
+    async def test_literouter_404_marks_model_bad(self):
+        chat = AsyncMock(side_effect=literouter.LiterouterError("not found", status=404))
+        self._enable_literouter(chat)
+        self.behaviors = {"g-main": [self._ClientError(429)], "g-fb": [self._ClientError(429), self._ClientError(429)]}
+        await bot.ask_gemini((1, 31), "hi")
+        self.assertIn(("literouter", "lr-model"), bot._bad_models)
 
     async def test_fallback_reply_is_saved_to_history(self):
         self.behaviors = {"g-main": [self._ClientError(429)], "g-fb": ["trả lời dự phòng"]}
@@ -562,3 +626,56 @@ class AutoChatPersistenceTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WarnUnknownGeminiModelsTests(unittest.IsolatedAsyncioTestCase):
+    def _client(self, names=None, error=None):
+        items = []
+        for n in names or []:
+            m = MagicMock()
+            m.name = n
+            items.append(m)
+
+        class Pager:
+            def __aiter__(self_):
+                async def gen():
+                    for i in items:
+                        yield i
+                return gen()
+
+        async def list_models():
+            if error:
+                raise error
+            return Pager()
+
+        client = MagicMock()
+        client.aio.models.list = list_models
+        return client
+
+    async def _run(self, client, models):
+        with patch.object(bot, "gemini_client", client), \
+             patch.object(config, "GEMINI_ENABLED", True), \
+             patch.object(config, "GEMINI_MODELS", models):
+            return await bot.warn_unknown_gemini_models()
+
+    async def test_reports_unknown_models_only(self):
+        client = self._client(["models/gemini-a", "models/gemini-b"])
+        with self.assertLogs("discord-ai-bot", level="WARNING") as logs:
+            unknown = await self._run(client, ["gemini-a", "gemini-typo"])
+        self.assertEqual(unknown, ["gemini-typo"])
+        self.assertTrue(any("gemini-typo" in line for line in logs.output))
+
+    async def test_all_models_valid_is_silent(self):
+        client = self._client(["models/gemini-a"])
+        self.assertEqual(await self._run(client, ["gemini-a"]), [])
+
+    async def test_listing_failure_never_raises(self):
+        client = self._client(error=RuntimeError("mạng lỗi"))
+        self.assertEqual(await self._run(client, ["gemini-a"]), [])
+
+    async def test_empty_listing_does_not_flag_everything(self):
+        self.assertEqual(await self._run(self._client([]), ["gemini-a"]), [])
+
+    async def test_disabled_gemini_skips_check(self):
+        with patch.object(bot, "gemini_client", None):
+            self.assertEqual(await bot.warn_unknown_gemini_models(), [])

@@ -142,6 +142,8 @@ class GeminiBot(commands.Bot):
             history_purge_loop.start()
         if literouter.client.available:
             literouter.client.start()  # nạp cache + làm mới danh sách model định kỳ
+        # Giữ tham chiếu: event loop chỉ giữ weak reference tới task.
+        self._model_check_task = asyncio.create_task(warn_unknown_gemini_models())  # không chặn khởi động
 
     async def close(self) -> None:
         await super().close()
@@ -404,7 +406,9 @@ class _ProviderFailure(Exception):
 
     kind: "rate"  = quota / 429
           "temp"  = lỗi tạm thời (5xx, timeout, mất kết nối)
-          "fatal" = lỗi không nên thử model khác (vd: 400) — trả lỗi ngay
+          "model" = riêng model này không dùng được (sai tên/không tồn tại/không có quyền) —
+                    chuyển model kế tiếp và tạm bỏ qua model này (xem _mark_model_bad)
+          "fatal" = lỗi không nên thử model khác (vd: 400 do nội dung request) — trả lỗi ngay
     """
 
     def __init__(self, message: str, kind: str):
@@ -413,8 +417,53 @@ class _ProviderFailure(Exception):
         self.kind = kind
 
 
+# Model bị loại tạm thời vì cấu hình sai (404/403/400 "model ..."): (provider, model) → mốc monotonic hết hạn.
+# Không có cooldown thì mỗi tin nhắn đều tốn một lượt gọi vào model sai trước khi chuyển sang dự phòng.
+MODEL_COOLDOWN_SECONDS = 600
+_bad_models: dict[tuple[str, str], float] = {}
+
+
+def _mark_model_bad(provider: str, model: str) -> None:
+    first = (provider, model) not in _bad_models or _bad_models[(provider, model)] <= time.monotonic()
+    _bad_models[(provider, model)] = time.monotonic() + MODEL_COOLDOWN_SECONDS
+    if first:
+        log.error(
+            "%s/%s không dùng được (sai tên model hoặc không có quyền) — bỏ qua %d giây, "
+            "hãy kiểm tra GEMINI_MODEL / GEMINI_FALLBACK_MODELS / LITEROUTER_MODEL",
+            provider, model, MODEL_COOLDOWN_SECONDS,
+        )
+
+
+def _is_model_cooling_down(provider: str, model: str) -> bool:
+    until = _bad_models.get((provider, model))
+    if until is None:
+        return False
+    if until <= time.monotonic():
+        del _bad_models[(provider, model)]
+        return False
+    return True
+
+
+def _is_model_error(status_code: int | None, text: str) -> bool:
+    """Lỗi 4xx do chính model được chọn: 404 (không tồn tại), 401/403 (không có quyền),
+    hoặc 400 có nhắc tới "model" (sai định dạng tên). 400 do nội dung request thì KHÔNG tính."""
+    if status_code in (401, 403, 404):
+        return True
+    return status_code == 400 and "model" in text.lower()
+
+
 def _build_candidates() -> list[tuple[str, str]]:
-    """Danh sách (provider, model) theo thứ tự thử: model chính trước, các model dự phòng sau."""
+    """Danh sách (provider, model) theo thứ tự thử: model chính trước, các model dự phòng sau.
+
+    Model đang trong cooldown bị bỏ qua; nếu TẤT CẢ đều đang cooldown thì vẫn trả đủ danh sách
+    để lỗi hiện ra thay vì bot im lặng báo "chưa có provider".
+    """
+    candidates = _all_candidates()
+    usable = [c for c in candidates if not _is_model_cooling_down(*c)]
+    return usable or candidates
+
+
+def _all_candidates() -> list[tuple[str, str]]:
     candidates: list[tuple[str, str]] = []
     for provider in config.AI_PROVIDER_ORDER:
         if provider == "gemini":
@@ -426,6 +475,35 @@ def _build_candidates() -> list[tuple[str, str]]:
                 if model:
                     candidates.append(("literouter", model))
     return candidates
+
+
+async def warn_unknown_gemini_models() -> list[str]:
+    """Đối chiếu GEMINI_MODELS với danh sách model Google trả về và cảnh báo model không tồn tại.
+
+    Chỉ ghi log, không đổi cấu hình và không bao giờ ném lỗi: nếu không liệt kê được
+    (mất mạng, key không có quyền list) thì bỏ qua, việc gọi thật vẫn có cơ chế fallback.
+    """
+    if not (config.GEMINI_ENABLED and gemini_client is not None):
+        return []
+    try:
+        available: set[str] = set()
+        pager = await asyncio.wait_for(gemini_client.aio.models.list(), timeout=config.GEMINI_TIMEOUT)
+        async for item in pager:
+            name = getattr(item, "name", "") or ""
+            available.add(name.removeprefix("models/"))
+    except Exception as e:
+        log.info("Không kiểm tra được danh sách model Gemini lúc khởi động (%s)", type(e).__name__)
+        return []
+    if not available:
+        return []
+    unknown = [m for m in config.GEMINI_MODELS if m.removeprefix("models/") not in available]
+    for model in unknown:
+        log.warning(
+            "Model Gemini '%s' không có trong danh sách của Google — kiểm tra lại tên trong "
+            "GEMINI_MODEL / GEMINI_FALLBACK_MODELS (bot sẽ tự bỏ qua model này khi gọi lỗi).",
+            model,
+        )
+    return unknown
 
 
 def describe_ai_providers() -> str:
@@ -461,6 +539,9 @@ async def _call_gemini(model: str, contents: list, gen_config) -> tuple[str, boo
         if e.code == 408:
             log.warning("Gemini %s: 408 timeout từ phía server", model)
             raise _ProviderFailure(MSG_OVERLOADED, "temp") from e
+        if _is_model_error(getattr(e, "code", None), str(e)):
+            log.error("Gemini model %s bị từ chối: %s", model, e)
+            raise _ProviderFailure(MSG_API_ERROR, "model") from e
         log.error("Gemini client error (%s): %s", model, e)
         raise _ProviderFailure(MSG_API_ERROR, "fatal") from e
     except (ServerError, asyncio.TimeoutError) as e:
@@ -489,6 +570,9 @@ async def _call_literouter(
         if e.temporary:
             log.warning("Literouter %s lỗi tạm thời: %s", model, e)
             raise _ProviderFailure(MSG_OVERLOADED, "temp") from e
+        if _is_model_error(e.status, str(e)):
+            log.error("Literouter model %s bị từ chối: %s", model, e)
+            raise _ProviderFailure(MSG_API_ERROR, "model") from e
         log.error("Literouter client error (%s): %s", model, e)
         raise _ProviderFailure(MSG_API_ERROR, "fatal") from e
     except Exception as e:
@@ -606,6 +690,8 @@ async def ask_gemini(
             failure = e.message
             if e.kind == "fatal":
                 return failure
+            if e.kind == "model":
+                _mark_model_bad(provider, model)
             if can_fallback:
                 log.warning("%s/%s thất bại (%s) — chuyển sang model kế tiếp", provider, model, e.kind)
             continue

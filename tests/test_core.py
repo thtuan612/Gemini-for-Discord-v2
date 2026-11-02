@@ -340,8 +340,8 @@ class ChannelContextTests(unittest.IsolatedAsyncioTestCase):
     async def test_record_channel_message_and_cached_context(self):
         channel = MagicMock()
         channel.id = 456
-        # channel.history should NOT be called when cache is populated
-        channel.history = MagicMock(side_effect=AssertionError("channel.history was called instead of cache"))
+        # Cache đã đủ số tin được yêu cầu nên không cần gọi API lịch sử.
+        channel.history = MagicMock(side_effect=AssertionError("channel.history should not be called"))
 
         user = MagicMock()
         user.id = 10
@@ -368,10 +368,76 @@ class ChannelContextTests(unittest.IsolatedAsyncioTestCase):
         record_channel_message(m1)
         record_channel_message(m2)
 
-        context = await build_channel_context(channel, limit=10)
+        context = await build_channel_context(channel, limit=2)
         self.assertIn("Tin nhắn cache 1", context)
         self.assertIn("Tin nhắn cache 2", context)
         channel.history.assert_not_called()
+
+    async def test_first_message_uses_discord_history_when_cache_only_has_current(self):
+        channel = MagicMock()
+        channel.id = 457
+        user = MagicMock()
+        user.id = 11
+        user.display_name = "Alice"
+
+        previous = MagicMock()
+        previous.id = 100
+        previous.author = user
+        previous.clean_content = "Mọi người đang nói về dự án nào?"
+        previous.content = previous.clean_content
+        previous.attachments = []
+        previous.reference = None
+
+        current = MagicMock()
+        current.id = 101
+        current.channel = channel
+        current.author = user
+        current.clean_content = "Còn tiến độ thì sao?"
+        current.content = current.clean_content
+        current.attachments = []
+        current.reference = None
+
+        async def mock_history(limit=10, before=None):
+            self.assertEqual(limit, 1)
+            self.assertIs(before, current)
+            yield previous
+
+        channel.history = mock_history
+        record_channel_message(current)
+
+        context = await build_channel_context(channel, current_message=current, limit=1)
+        self.assertIn("Mọi người đang nói về dự án nào?", context)
+        self.assertNotIn("Còn tiến độ thì sao?", context)
+
+    async def test_channel_context_excludes_messages_newer_than_current(self):
+        channel = MagicMock()
+        channel.id = 458
+        user = MagicMock()
+        user.id = 12
+        user.display_name = "Bob"
+
+        def make_message(message_id, content):
+            item = MagicMock()
+            item.id = message_id
+            item.channel = channel
+            item.author = user
+            item.clean_content = content
+            item.content = content
+            item.attachments = []
+            item.reference = None
+            return item
+
+        earlier = make_message(200, "Tin trước")
+        current = make_message(201, "Tin hiện tại")
+        later = make_message(202, "Tin đến sau")
+        record_channel_message(earlier)
+        record_channel_message(current)
+        record_channel_message(later)
+
+        context = await build_channel_context(channel, current_message=current, limit=5)
+        self.assertIn("Tin trước", context)
+        self.assertNotIn("Tin hiện tại", context)
+        self.assertNotIn("Tin đến sau", context)
 
     async def test_get_referenced_message_from_cache(self):
         channel = MagicMock()

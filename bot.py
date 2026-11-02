@@ -5,14 +5,12 @@ import functools
 import json
 import logging
 import os
-import platform
 import time
 from collections import OrderedDict, deque
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 import discord
-import psutil
 from discord import app_commands
 from discord.ext import commands, tasks
 from google import genai
@@ -21,15 +19,14 @@ from google.genai.errors import ClientError, ServerError
 
 import config
 import literouter
+from channel_context import ChannelContext, REFERENCE_UNSET
+import botinfo
+from botinfo import BotInfoMainView, build_botinfo_embed
 from db import Database
+from prompt_security import PROMPT_SECURITY_INSTRUCTION, build_untrusted_payload
 from utils import (
-    format_bytes,
-    format_uptime,
-    get_dir_size,
-    get_memory_limit_bytes,
     is_trivial_message,
-    next_run_utc,
-    parse_hhmm,
+    normalize_history,
     split_message,
 )
 
@@ -141,11 +138,12 @@ class GeminiBot(commands.Bot):
                 log.info("Synced %d slash command(s)", len(synced))
             except Exception:
                 log.exception("Không sync được slash commands")
-        reminder_check_loop.start()
         if config.HISTORY_RETENTION_DAYS > 0:
             history_purge_loop.start()
         if literouter.client.available:
             literouter.client.start()  # nạp cache + làm mới danh sách model định kỳ
+        # Giữ tham chiếu: event loop chỉ giữ weak reference tới task.
+        self._model_check_task = asyncio.create_task(warn_unknown_gemini_models())  # không chặn khởi động
 
     async def close(self) -> None:
         await super().close()
@@ -171,38 +169,63 @@ bot = GeminiBot(
 # ======================================================================
 HistoryKey = tuple[int, int]
 HISTORY_CACHE_MAX = 500
+HISTORY_CACHE_TTL_SECONDS = 300
 history_cache: OrderedDict[HistoryKey, deque] = OrderedDict()
+_history_cache_times: dict[HistoryKey, float] = {}
 
 
 def _cache_get(key: HistoryKey) -> deque | None:
     history = history_cache.get(key)
-    if history is not None:
-        history_cache.move_to_end(key)
+    if history is None:
+        return None
+    cached_at = _history_cache_times.get(key, 0.0)
+    if time.monotonic() - cached_at > HISTORY_CACHE_TTL_SECONDS:
+        history_cache.pop(key, None)
+        _history_cache_times.pop(key, None)
+        return None
+    history_cache.move_to_end(key)
     return history
 
 
 def _cache_put(key: HistoryKey, history: deque) -> None:
     history_cache[key] = history
+    _history_cache_times[key] = time.monotonic()
     history_cache.move_to_end(key)
     while len(history_cache) > HISTORY_CACHE_MAX:
-        history_cache.popitem(last=False)
+        evicted, _ = history_cache.popitem(last=False)
+        _history_cache_times.pop(evicted, None)
+
+
+def _history_maxlen() -> int:
+    return max(0, config.MAX_HISTORY_TURNS) * 2
+
+
+def _history_to_deque(entries: list[tuple[str, str]]) -> deque:
+    return deque(
+        (types.Content(role=role, parts=[types.Part(text=text)]) for role, text in entries),
+        maxlen=_history_maxlen(),
+    )
 
 
 async def load_history(key: HistoryKey) -> deque:
     cached = _cache_get(key)
     if cached is not None:
         return cached
-    history: deque = deque(maxlen=config.MAX_HISTORY_TURNS * 2)
+    entries: list[tuple[object, object]] = []
     raw = await db.load_history_raw(*key)
     if raw:
         try:
-            for item in json.loads(raw):
-                history.append(
-                    types.Content(role=item["role"], parts=[types.Part(text=item["text"])])
-                )
-        except (json.JSONDecodeError, KeyError, TypeError):
-            log.warning("Lịch sử lỗi format cho %s, bỏ qua", key)
-            history.clear()
+            items = json.loads(raw)
+            if not isinstance(items, list):
+                raise ValueError("history must be a list")
+            entries = [(item.get("role"), item.get("text")) for item in items if isinstance(item, dict)]
+        except (json.JSONDecodeError, ValueError, TypeError):
+            log.warning("Lịch sử lỗi format, bỏ qua")
+    # Dữ liệu trong DB không được tin tưởng: làm sạch vai trò/thứ tự và áp giới hạn dung lượng.
+    normalized = normalize_history(entries, max_entries=_history_maxlen(), max_chars=config.MAX_HISTORY_CHARS)
+    if len(normalized) != len(entries):
+        log.info("Đã làm sạch lịch sử hội thoại đọc từ DB (%d → %d mục)", len(entries), len(normalized))
+    history = _history_to_deque(normalized)
     _cache_put(key, history)
     return history
 
@@ -210,18 +233,24 @@ async def load_history(key: HistoryKey) -> deque:
 async def save_history(key: HistoryKey, history: deque) -> None:
     # Chỉ lưu các turn thuần text (loại bỏ turn có ảnh) — ảnh không serialize được và
     # khi reload sẽ thiếu context ảnh, nhưng còn hơn để role là MagicMock crash JSON.
-    serializable = [
-        {"role": c.role, "text": c.parts[0].text}
+    entries = [
+        (c.role, c.parts[0].text)
         for c in history
         if c.parts and getattr(c.parts[0], "text", None) is not None
     ]
-    raw = json.dumps(serializable, ensure_ascii=False)
+    normalized = normalize_history(entries, max_entries=history.maxlen, max_chars=config.MAX_HISTORY_CHARS)
+    # Bộ nhớ luôn khớp với thứ sẽ được lưu (đã áp giới hạn), kể cả khi ghi DB bên dưới thất bại.
+    history.clear()
+    history.extend(types.Content(role=role, parts=[types.Part(text=text)]) for role, text in normalized)
+    _cache_put(key, history)
+    raw = json.dumps([{"role": role, "text": text} for role, text in normalized], ensure_ascii=False)
     await db.save_history_raw(*key, raw)
 
 
 async def delete_history(key: HistoryKey) -> None:
-    history_cache.pop(key, None)
     await db.delete_history(*key)
+    history_cache.pop(key, None)
+    _history_cache_times.pop(key, None)
 
 
 # ======================================================================
@@ -377,7 +406,9 @@ class _ProviderFailure(Exception):
 
     kind: "rate"  = quota / 429
           "temp"  = lỗi tạm thời (5xx, timeout, mất kết nối)
-          "fatal" = lỗi không nên thử model khác (vd: 400) — trả lỗi ngay
+          "model" = riêng model này không dùng được (sai tên/không tồn tại/không có quyền) —
+                    chuyển model kế tiếp và tạm bỏ qua model này (xem _mark_model_bad)
+          "fatal" = lỗi không nên thử model khác (vd: 400 do nội dung request) — trả lỗi ngay
     """
 
     def __init__(self, message: str, kind: str):
@@ -386,8 +417,53 @@ class _ProviderFailure(Exception):
         self.kind = kind
 
 
+# Model bị loại tạm thời vì cấu hình sai (404/403/400 "model ..."): (provider, model) → mốc monotonic hết hạn.
+# Không có cooldown thì mỗi tin nhắn đều tốn một lượt gọi vào model sai trước khi chuyển sang dự phòng.
+MODEL_COOLDOWN_SECONDS = 600
+_bad_models: dict[tuple[str, str], float] = {}
+
+
+def _mark_model_bad(provider: str, model: str) -> None:
+    first = (provider, model) not in _bad_models or _bad_models[(provider, model)] <= time.monotonic()
+    _bad_models[(provider, model)] = time.monotonic() + MODEL_COOLDOWN_SECONDS
+    if first:
+        log.error(
+            "%s/%s không dùng được (sai tên model hoặc không có quyền) — bỏ qua %d giây, "
+            "hãy kiểm tra GEMINI_MODEL / GEMINI_FALLBACK_MODELS / LITEROUTER_MODEL",
+            provider, model, MODEL_COOLDOWN_SECONDS,
+        )
+
+
+def _is_model_cooling_down(provider: str, model: str) -> bool:
+    until = _bad_models.get((provider, model))
+    if until is None:
+        return False
+    if until <= time.monotonic():
+        del _bad_models[(provider, model)]
+        return False
+    return True
+
+
+def _is_model_error(status_code: int | None, text: str) -> bool:
+    """Lỗi 4xx do chính model được chọn: 404 (không tồn tại), 401/403 (không có quyền),
+    hoặc 400 có nhắc tới "model" (sai định dạng tên). 400 do nội dung request thì KHÔNG tính."""
+    if status_code in (401, 403, 404):
+        return True
+    return status_code == 400 and "model" in text.lower()
+
+
 def _build_candidates() -> list[tuple[str, str]]:
-    """Danh sách (provider, model) theo thứ tự thử: model chính trước, các model dự phòng sau."""
+    """Danh sách (provider, model) theo thứ tự thử: model chính trước, các model dự phòng sau.
+
+    Model đang trong cooldown bị bỏ qua; nếu TẤT CẢ đều đang cooldown thì vẫn trả đủ danh sách
+    để lỗi hiện ra thay vì bot im lặng báo "chưa có provider".
+    """
+    candidates = _all_candidates()
+    usable = [c for c in candidates if not _is_model_cooling_down(*c)]
+    return usable or candidates
+
+
+def _all_candidates() -> list[tuple[str, str]]:
     candidates: list[tuple[str, str]] = []
     for provider in config.AI_PROVIDER_ORDER:
         if provider == "gemini":
@@ -399,6 +475,35 @@ def _build_candidates() -> list[tuple[str, str]]:
                 if model:
                     candidates.append(("literouter", model))
     return candidates
+
+
+async def warn_unknown_gemini_models() -> list[str]:
+    """Đối chiếu GEMINI_MODELS với danh sách model Google trả về và cảnh báo model không tồn tại.
+
+    Chỉ ghi log, không đổi cấu hình và không bao giờ ném lỗi: nếu không liệt kê được
+    (mất mạng, key không có quyền list) thì bỏ qua, việc gọi thật vẫn có cơ chế fallback.
+    """
+    if not (config.GEMINI_ENABLED and gemini_client is not None):
+        return []
+    try:
+        available: set[str] = set()
+        pager = await asyncio.wait_for(gemini_client.aio.models.list(), timeout=config.GEMINI_TIMEOUT)
+        async for item in pager:
+            name = getattr(item, "name", "") or ""
+            available.add(name.removeprefix("models/"))
+    except Exception as e:
+        log.info("Không kiểm tra được danh sách model Gemini lúc khởi động (%s)", type(e).__name__)
+        return []
+    if not available:
+        return []
+    unknown = [m for m in config.GEMINI_MODELS if m.removeprefix("models/") not in available]
+    for model in unknown:
+        log.warning(
+            "Model Gemini '%s' không có trong danh sách của Google — kiểm tra lại tên trong "
+            "GEMINI_MODEL / GEMINI_FALLBACK_MODELS (bot sẽ tự bỏ qua model này khi gọi lỗi).",
+            model,
+        )
+    return unknown
 
 
 def describe_ai_providers() -> str:
@@ -434,6 +539,9 @@ async def _call_gemini(model: str, contents: list, gen_config) -> tuple[str, boo
         if e.code == 408:
             log.warning("Gemini %s: 408 timeout từ phía server", model)
             raise _ProviderFailure(MSG_OVERLOADED, "temp") from e
+        if _is_model_error(getattr(e, "code", None), str(e)):
+            log.error("Gemini model %s bị từ chối: %s", model, e)
+            raise _ProviderFailure(MSG_API_ERROR, "model") from e
         log.error("Gemini client error (%s): %s", model, e)
         raise _ProviderFailure(MSG_API_ERROR, "fatal") from e
     except (ServerError, asyncio.TimeoutError) as e:
@@ -462,6 +570,9 @@ async def _call_literouter(
         if e.temporary:
             log.warning("Literouter %s lỗi tạm thời: %s", model, e)
             raise _ProviderFailure(MSG_OVERLOADED, "temp") from e
+        if _is_model_error(e.status, str(e)):
+            log.error("Literouter model %s bị từ chối: %s", model, e)
+            raise _ProviderFailure(MSG_API_ERROR, "model") from e
         log.error("Literouter client error (%s): %s", model, e)
         raise _ProviderFailure(MSG_API_ERROR, "fatal") from e
     except Exception as e:
@@ -520,24 +631,28 @@ async def ask_gemini(
         return MSG_NO_PROVIDER
 
     history = await load_history(key)
-    contents = list(history)
-    user_parts = [types.Part(text=user_message)]
-    if image_parts:
-        user_parts.extend(image_parts)
-    contents.append(types.Content(role="user", parts=user_parts))
 
-    system_parts = [config.SYSTEM_PROMPT]
+    system_parts = [config.SYSTEM_PROMPT, PROMPT_SECURITY_INSTRUCTION]
     if privileged:
         system_parts.append(config.PRIVILEGED_NOTE)
-    if server_context:
-        system_parts.append(server_context)
-    if channel_context:
-        system_parts.append(channel_context)
     if auto_channel:
-        # Nằm trong system instruction, KHÔNG lưu vào lịch sử hội thoại.
+        # Đây là chỉ thị điều khiển của ứng dụng, không phải dữ liệu Discord.
         system_parts.append(RELEVANCE_INSTRUCTION)
 
     system_text = "\n\n".join(system_parts)
+    # Context Discord và nội dung người dùng luôn nằm ở user role, không được
+    # ghép vào system_instruction vì chúng có thể chứa prompt injection.
+    untrusted_user_payload = build_untrusted_payload(
+        user_message=user_message,
+        server_context=server_context,
+        channel_context=channel_context,
+    )
+
+    contents = list(history)
+    user_parts = [types.Part(text=untrusted_user_payload)]
+    if image_parts:
+        user_parts.extend(image_parts)
+    contents.append(types.Content(role="user", parts=user_parts))
     cfg_kwargs: dict = {
         "system_instruction": system_text,
         "max_output_tokens": config.MAX_OUTPUT_TOKENS,
@@ -567,7 +682,7 @@ async def ask_gemini(
             call = functools.partial(_call_gemini, model, contents, gen_config)
         else:
             call = functools.partial(
-                _call_literouter, model, system_text, history_pairs, user_message, images
+                _call_literouter, model, system_text, history_pairs, untrusted_user_payload, images
             )
         try:
             reply, truncated = await _attempt(call, can_fallback=can_fallback)
@@ -575,6 +690,8 @@ async def ask_gemini(
             failure = e.message
             if e.kind == "fatal":
                 return failure
+            if e.kind == "model":
+                _mark_model_bad(provider, model)
             if can_fallback:
                 log.warning("%s/%s thất bại (%s) — chuyển sang model kế tiếp", provider, model, e.kind)
             continue
@@ -586,65 +703,20 @@ async def ask_gemini(
 
     if not reply:
         return MSG_TRUNCATED if truncated else MSG_EMPTY
-    if auto_channel and SKIP_TOKEN in reply:
+    if auto_channel and reply.strip() == SKIP_TOKEN:
         return None
     if truncated:
         reply += " …"
 
     history.append(types.Content(role="user", parts=[types.Part(text=user_message)]))
     history.append(types.Content(role="model", parts=[types.Part(text=reply)]))
-    await save_history(key, history)
-    return reply
-
-
-# ======================================================================
-# Reminder
-# ======================================================================
-async def _fire_reminder(row, now: datetime) -> None:
-    scheduled = datetime.fromisoformat(row["next_run_utc"])
-    stale = now - scheduled > timedelta(minutes=config.REMINDER_GRACE_MINUTES)
-    text = row["message"]
-    should_send = True
-    if stale:
-        if row["repeat"] == "daily":
-            should_send = False  # lỡ giờ (vd: bot offline) — bỏ lượt hôm nay, hẹn lượt kế
-            log.info("Bỏ qua reminder #%s đã trễ quá hạn", row["id"])
-        else:
-            text = "⏰ (nhắc trễ) " + text
-
-    if should_send:
-        channel = bot.get_channel(row["channel_id"])
-        if channel is None:
-            log.warning("Không tìm thấy kênh %s cho reminder #%s", row["channel_id"], row["id"])
-        else:
-            try:
-                await channel.send(text, allowed_mentions=NO_MENTIONS)
-            except discord.HTTPException as e:
-                log.error("Gửi reminder #%s thất bại: %s", row["id"], e)
-                if e.status >= 500:
-                    return  # lỗi phía Discord — để lượt quét sau thử lại
-
-    if row["repeat"] == "daily":
-        nxt = next_run_utc(row["hour"], row["minute"], after=now)
-        await db.advance_reminder(row["id"], nxt.isoformat())
-    else:
-        await db.deactivate_reminder(row["id"])
-
-
-@tasks.loop(seconds=30)
-async def reminder_check_loop():
     try:
-        now = datetime.now(timezone.utc)
-        for row in await db.get_due_reminders(now.replace(microsecond=0).isoformat()):
-            await _fire_reminder(row, now)
+        await save_history(key, history)
     except Exception:
-        # Không để exception làm chết vòng lặp.
-        log.exception("Lỗi trong reminder_check_loop")
-
-
-@reminder_check_loop.before_loop
-async def _before_reminder_loop():
-    await bot.wait_until_ready()
+        # Câu trả lời đã tạo xong: vẫn gửi cho người dùng. Bộ nhớ đã có lượt này và sẽ được
+        # ghi xuống DB ở lần lưu thành công kế tiếp.
+        log.exception("Không lưu được lịch sử hội thoại xuống DB")
+    return reply
 
 
 @tasks.loop(hours=6)
@@ -652,25 +724,11 @@ async def history_purge_loop():
     try:
         deleted = await db.purge_old_history(config.HISTORY_RETENTION_DAYS)
         if deleted:
-            history_cache.clear()  # mọi thay đổi đã nằm trong DB nên reload là an toàn
+            history_cache.clear()
+            _history_cache_times.clear()
             log.info("Đã xóa %d lịch sử hội thoại quá %d ngày", deleted, config.HISTORY_RETENTION_DAYS)
     except Exception:
         log.exception("Lỗi trong history_purge_loop")
-    if config.REMINDER_RETENTION_DAYS > 0:
-        try:
-            removed = await db.purge_inactive_reminders(config.REMINDER_RETENTION_DAYS)
-            if removed:
-                log.info("Đã xóa %d reminder đã tắt quá %d ngày", removed, config.REMINDER_RETENTION_DAYS)
-        except Exception:
-            log.exception("Lỗi khi dọn reminder đã tắt")
-
-
-async def backfill_reminder_guilds() -> None:
-    """Gán guild_id cho reminder tạo từ phiên bản cũ (chưa có cột này)."""
-    for row in await db.reminders_missing_guild():
-        guild = getattr(bot.get_channel(row["channel_id"]), "guild", None)
-        if guild:
-            await db.set_reminder_guild(row["id"], guild.id)
 
 
 # ======================================================================
@@ -698,62 +756,21 @@ async def on_ready():
             if guild.id not in allowed_guild_ids:
                 log.warning("Đang ở server không được phép: %s (ID: %s) — tự rời.", guild.name, guild.id)
                 await guild.leave()
-    try:
-        await backfill_reminder_guilds()
-    except Exception:
-        log.exception("Backfill guild_id cho reminder thất bại")
     log.info("Logged in as %s (ID: %s)", bot.user, bot.user.id)
 
 
-# Cache tin nhắn gần nhất theo channel_id để nạp ngữ cảnh tức thì,
-# đọc trước theo thời gian thực mà không cần gọi API channel.history() của Discord.
-CHANNEL_MESSAGE_CACHE_MAX_CHANNELS = 200
-_channel_message_cache: OrderedDict[int, deque[discord.Message]] = OrderedDict()
+# Channel context được quản lý độc lập để bot.py chỉ điều phối luồng xử lý.
+channel_context_manager = ChannelContext(bot, log)
+# Giữ alias để tương thích với test và code nội bộ đang truy cập cache trực tiếp.
+_channel_message_cache = channel_context_manager._messages
 
 
 def record_channel_message(message: discord.Message | None) -> None:
-    """Lưu tin nhắn vào cache RAM theo kênh để nạp ngữ cảnh tức thì (0ms mạng)."""
-    if message is None or not getattr(message, "channel", None) or not hasattr(message.channel, "id"):
-        return
-    chid = message.channel.id
-    dq = _channel_message_cache.get(chid)
-    if dq is None:
-        if len(_channel_message_cache) >= CHANNEL_MESSAGE_CACHE_MAX_CHANNELS:
-            _channel_message_cache.popitem(last=False)
-        dq = deque(maxlen=max(20, config.CHANNEL_HISTORY_LIMIT * 2))
-        _channel_message_cache[chid] = dq
-    else:
-        _channel_message_cache.move_to_end(chid)
-
-    if dq and getattr(dq[-1], "id", None) == getattr(message, "id", None):
-        return
-    dq.append(message)
+    channel_context_manager.record_message(message)
 
 
 async def get_referenced_message(message: discord.Message) -> discord.Message | None:
-    """Lấy tin nhắn được reply/trích dẫn nếu có."""
-    if message.reference is None:
-        return None
-    ref = message.reference.resolved
-    if isinstance(ref, discord.Message):
-        return ref
-    ref_id = message.reference.message_id
-    if not ref_id:
-        return None
-
-    # Tìm trước trong cache RAM của kênh (tức thì, tránh tốn network call)
-    chid = getattr(message.channel, "id", None)
-    if chid and chid in _channel_message_cache:
-        for m in _channel_message_cache[chid]:
-            if getattr(m, "id", None) == ref_id:
-                return m
-
-    if hasattr(message.channel, "fetch_message"):
-        try:
-            return await message.channel.fetch_message(ref_id)
-        except (discord.NotFound, discord.HTTPException, Exception):
-            return None
-    return None
+    return await channel_context_manager.get_reference(message)
 
 
 async def build_channel_context(
@@ -762,126 +779,19 @@ async def build_channel_context(
     current_message: discord.Message | None = None,
     ref_msg: discord.Message | None = None,
     limit: int = config.CHANNEL_HISTORY_LIMIT,
+    before_id: int | None = None,
 ) -> str:
-    """Đọc lịch sử các tin nhắn gần nhất trong kênh và tin nhắn trích dẫn (nếu có) để tạo ngữ cảnh."""
-    if channel is None or limit <= 0:
-        return ""
-
-    messages: list[discord.Message] = []
-    chid = getattr(channel, "id", None)
-    cached = _channel_message_cache.get(chid) if chid else None
-
-    if cached:
-        # Lấy từ cache RAM (nhanh, 0ms network latency)
-        for msg in reversed(cached):
-            if current_message is not None and getattr(msg, "id", None) == getattr(current_message, "id", None):
-                continue
-            content = (getattr(msg, "clean_content", None) or getattr(msg, "content", None) or "").strip()
-            attachments = getattr(msg, "attachments", None) or []
-            if not content and not attachments:
-                continue
-            messages.append(msg)
-            if len(messages) >= limit:
-                break
-        messages.reverse()
-    elif hasattr(channel, "history"):
-        # Fallback khi cache chưa có tin (vd: bot vừa khởi động)
-        try:
-            before = current_message if current_message is not None else None
-            async for msg in channel.history(limit=limit, before=before):
-                if current_message is not None and getattr(msg, "id", None) == getattr(current_message, "id", None):
-                    continue
-                content = (getattr(msg, "clean_content", None) or getattr(msg, "content", None) or "").strip()
-                attachments = getattr(msg, "attachments", None) or []
-                if not content and not attachments:
-                    continue
-                messages.append(msg)
-        except (discord.Forbidden, discord.HTTPException, Exception) as e:
-            log.warning("Không thể đọc lịch sử tin nhắn kênh %s: %s", getattr(channel, "id", None), e)
-        messages.reverse()
-        for m in messages:
-            record_channel_message(m)
-
-    lines: list[str] = []
-
-    if messages:
-        lines.append("Lịch sử các tin nhắn gần nhất trong kênh chat (từ cũ đến mới để bạn nắm ngữ cảnh):")
-        for msg in messages:
-            if bot.user and msg.author.id == bot.user.id:
-                author_name = f"Bot ({bot.user.display_name} - chính bạn)"
-            else:
-                author_name = getattr(msg.author, "display_name", str(msg.author))
-
-            text = (getattr(msg, "clean_content", None) or getattr(msg, "content", None) or "").strip()
-            attachments = getattr(msg, "attachments", None) or []
-            if attachments:
-                att_names = ", ".join(a.filename for a in attachments[:2])
-                att_tag = f"[kèm {len(attachments)} file/ảnh: {att_names}]"
-                text = f"{text} {att_tag}".strip() if text else att_tag
-
-            if len(text) > 300:
-                text = text[:300] + "..."
-
-            reply_tag = ""
-            ref = getattr(msg, "reference", None)
-            if ref and getattr(ref, "message_id", None):
-                reply_tag = " (đang reply)"
-
-            lines.append(f"- {author_name}{reply_tag}: {text}")
-
-    if ref_msg is not None:
-        if bot.user and ref_msg.author.id == bot.user.id:
-            ref_author = f"Bot ({bot.user.display_name} - chính bạn)"
-        else:
-            ref_author = getattr(ref_msg.author, "display_name", str(ref_msg.author))
-
-        ref_text = (getattr(ref_msg, "clean_content", None) or getattr(ref_msg, "content", None) or "").strip()
-        ref_atts = getattr(ref_msg, "attachments", None) or []
-        if ref_atts:
-            att_names = ", ".join(a.filename for a in ref_atts[:2])
-            att_tag = f"[kèm {len(ref_atts)} file/ảnh: {att_names}]"
-            ref_text = f"{ref_text} {att_tag}".strip() if ref_text else att_tag
-
-        if len(ref_text) > 400:
-            ref_text = ref_text[:400] + "..."
-
-        lines.append("\n[Tin nhắn đang được người dùng trực tiếp reply / trích dẫn]:")
-        lines.append(f"- {ref_author}: {ref_text or '[Nội dung trống]'}")
-
-    if not lines:
-        return ""
-
-    lines.append(
-        "\nLƯU Ý VỀ NGỮ CẢNH: Đoạn chat trên là các tin nhắn gần nhất trong kênh để bạn hiểu "
-        "mọi người đang thảo luận vấn đề gì, ai đang hỏi ai, các đại từ 'nó', 'đó', 'họ', 'quán đó'... "
-        "ám chỉ điều gì. Nếu câu hỏi hiện tại tiếp nối cuộc trò chuyện trên, hãy trả lời đúng ngữ cảnh, "
-        "tuyệt đối không trả lời lạc đề, bậy bạ hoặc vô nghĩa. Nếu người dùng hỏi một chủ đề hoàn toàn "
-        "mới, hãy tập trung trả lời chủ đề mới đó."
+    return await channel_context_manager.build(
+        channel, current_message=current_message, ref_msg=ref_msg, limit=limit, before_id=before_id
     )
 
-    return "\n".join(lines)
 
-
-async def is_message_for_bot(message: discord.Message) -> bool:
-    """Lọc nhanh, không tốn API call: loại các trường hợp rõ ràng KHÔNG nói với bot."""
-    if bot.user and bot.user in message.mentions:
-        return True
-
-    if message.reference is not None:
-        ref_msg = message.reference.resolved
-        if ref_msg is None and message.reference.message_id:
-            try:
-                ref_msg = await message.channel.fetch_message(message.reference.message_id)
-            except (discord.NotFound, discord.HTTPException):
-                ref_msg = None
-        # `resolved` có thể là DeletedReferencedMessage (không có .author)
-        if isinstance(ref_msg, discord.Message) and (not bot.user or ref_msg.author.id != bot.user.id):
-            return False
-
-    human_mentions = [m for m in message.mentions if not m.bot]
-    if human_mentions and (not bot.user or bot.user not in message.mentions):
-        return False
-    return True
+async def is_message_for_bot(
+    message: discord.Message,
+    *,
+    ref_msg: object = REFERENCE_UNSET,
+) -> bool:
+    return await channel_context_manager.is_message_for_bot(message, ref_msg=ref_msg)
 
 
 _auto_last: dict[tuple[int, int], float] = {}
@@ -924,7 +834,7 @@ async def process_chat_message(
             return
         if _auto_chat_on_cooldown(message.channel.id, message.author.id):
             return
-        if not await is_message_for_bot(message):
+        if not await is_message_for_bot(message, ref_msg=ref_msg):
             return
 
     key: HistoryKey = (message.guild.id, message.author.id)
@@ -983,6 +893,67 @@ async def process_chat_message(
 
 
 @bot.event
+async def on_raw_message_delete(payload: discord.RawMessageDeleteEvent):
+    # Tin đã bị xóa không được tiếp tục đưa vào ngữ cảnh gửi cho AI.
+    channel_context_manager.remove_messages(payload.channel_id, [payload.message_id])
+
+
+@bot.event
+async def on_raw_bulk_message_delete(payload: discord.RawBulkMessageDeleteEvent):
+    channel_context_manager.remove_messages(payload.channel_id, payload.message_ids)
+
+
+@bot.event
+async def on_raw_message_edit(payload: discord.RawMessageUpdateEvent):
+    # Bản đã cache có thể cũ: bỏ đi thay vì giữ nội dung trước khi sửa.
+    # on_message_edit (nếu discord.py còn giữ tin trong cache) sẽ ghi lại bản mới.
+    channel_context_manager.remove_messages(payload.channel_id, [payload.message_id])
+
+
+@bot.event
+async def on_message_edit(before: discord.Message, after: discord.Message):
+    if after.guild is None:
+        return
+    if after.author.bot and not (bot.user and after.author.id == bot.user.id):
+        return
+    if allowed_guild_ids and after.guild.id not in allowed_guild_ids:
+        return
+    record_channel_message(after)
+
+
+@bot.event
+async def on_guild_channel_delete(channel: discord.abc.GuildChannel):
+    channel_context_manager.forget_channel(channel.id)
+    if channel.id in auto_chat_channels:
+        auto_chat_channels.discard(channel.id)
+        try:
+            await db.remove_auto_chat_channel(channel.id)
+        except Exception:
+            log.exception("Không xóa được kênh auto-chat đã bị xóa khỏi DB")
+
+
+@bot.event
+async def on_guild_remove(guild: discord.Guild):
+    """Bot bị đuổi/rời server: xóa dữ liệu của server đó (lịch sử hội thoại, cấu hình auto-chat, cache)."""
+    try:
+        for channel_id in await db.list_auto_chat_channels(guild.id):
+            auto_chat_channels.discard(channel_id)
+        for channel in getattr(guild, "channels", ()):
+            auto_chat_channels.discard(channel.id)
+            channel_context_manager.forget_channel(channel.id)
+        channel_context_manager.forget_guild(guild.id)
+        for cache_key in [k for k in history_cache if k[0] == guild.id]:
+            history_cache.pop(cache_key, None)
+            _history_cache_times.pop(cache_key, None)
+        history_rows, channel_rows = await db.delete_guild_data(guild.id)
+        log.info(
+            "Đã dọn dữ liệu của server %s: %d lịch sử, %d kênh auto-chat", guild.id, history_rows, channel_rows
+        )
+    except Exception:
+        log.exception("Không dọn được dữ liệu của server %s sau khi rời", guild.id)
+
+
+@bot.event
 async def on_message(message: discord.Message):
     if message.author.bot or message.guild is None:
         return
@@ -1011,7 +982,10 @@ async def on_message(message: discord.Message):
 async def _send_followup_chunks(interaction: discord.Interaction, text: str) -> None:
     try:
         for chunk in split_message(text, config.MAX_REPLY_CHARS):
-            await interaction.followup.send(chunk)
+            sent = await interaction.followup.send(chunk)
+            # Giống luồng mention/auto-chat: câu trả lời của bot phải có trong ngữ cảnh kênh về sau.
+            if isinstance(sent, discord.Message):
+                record_channel_message(sent)
     except discord.HTTPException as e:
         log.error("Gửi followup thất bại: %s", e)
 
@@ -1028,7 +1002,14 @@ async def chat_command(
         async with user_gate(key, allow_queue=False):
             await interaction.response.defer(thinking=True)
             image_parts = await build_image_parts([image] if image else [])
-            channel_context = await build_channel_context(interaction.channel)
+            # Mặc định /chat đọc vài tin gần nhất của kênh để hiểu mạch hội thoại; đặt
+            # CHAT_INCLUDE_CHANNEL_CONTEXT=false để /chat không gửi tin của thành viên khác tới AI.
+            # before_id=interaction.id: chỉ lấy tin trước thời điểm gọi lệnh, không lấy tin đến sau.
+            channel_context = (
+                await build_channel_context(interaction.channel, before_id=interaction.id)
+                if config.CHAT_INCLUDE_CHANNEL_CONTEXT and config.CHANNEL_HISTORY_LIMIT > 0
+                else ""
+            )
             reply = await ask_gemini(
                 key,
                 message,
@@ -1056,140 +1037,17 @@ async def chat_command(
 
 @bot.tree.command(name="reset", description="Xóa lịch sử hội thoại của bạn với AI (ở server này)")
 async def reset_command(interaction: discord.Interaction):
-    await delete_history((interaction.guild_id, interaction.user.id))
+    key = (interaction.guild_id, interaction.user.id)
+    try:
+        async with user_gate(key, allow_queue=False):
+            await delete_history(key)
+    except Busy:
+        await interaction.response.send_message(
+            "Bạn đang có một lượt chat được xử lý. Hãy dùng /reset lại sau khi lượt đó kết thúc.",
+            ephemeral=True,
+        )
+        return
     await interaction.response.send_message("Đã xóa lịch sử hội thoại của bạn.", ephemeral=True)
-
-
-@bot.tree.command(name="remind", description="Đặt lịch nhắc tự động (giờ Việt Nam)")
-@app_commands.describe(
-    time="Giờ theo định dạng HH:MM, 24h, giờ Việt Nam (vd: 06:00)",
-    message="Nội dung tin nhắn sẽ gửi",
-    repeat="Lặp lại hàng ngày hay chỉ 1 lần",
-    channel="Kênh sẽ gửi tin (mặc định: kênh hiện tại)",
-)
-@app_commands.choices(
-    repeat=[
-        app_commands.Choice(name="Một lần", value="once"),
-        app_commands.Choice(name="Hàng ngày", value="daily"),
-    ]
-)
-async def remind_command(
-    interaction: discord.Interaction,
-    time: str,
-    message: str,
-    repeat: app_commands.Choice[str],
-    channel: discord.TextChannel | None = None,
-):
-    parsed = parse_hhmm(time)
-    if parsed is None:
-        await interaction.response.send_message(
-            "Giờ không hợp lệ, nhập dạng `HH:MM` 24h nhé, ví dụ `06:00` hoặc `18:30`.",
-            ephemeral=True,
-        )
-        return
-    hour, minute = parsed
-
-    text = message.strip()
-    if not text or len(text) > config.MAX_REMINDER_LENGTH:
-        await interaction.response.send_message(
-            f"Nội dung nhắc phải từ 1 đến {config.MAX_REMINDER_LENGTH} ký tự.", ephemeral=True
-        )
-        return
-
-    target = channel or interaction.channel
-    if not isinstance(target, (discord.TextChannel, discord.Thread)):
-        await interaction.response.send_message("Kênh này không gửi nhắc được.", ephemeral=True)
-        return
-    user_perms = target.permissions_for(interaction.user)
-    if not (user_perms.view_channel and user_perms.send_messages):
-        await interaction.response.send_message(
-            "Bạn không có quyền gửi tin vào kênh đó.", ephemeral=True
-        )
-        return
-    bot_perms = target.permissions_for(interaction.guild.me)
-    if not (bot_perms.view_channel and bot_perms.send_messages):
-        await interaction.response.send_message("Bot không có quyền gửi tin vào kênh đó.", ephemeral=True)
-        return
-
-    active = await db.count_active_reminders(interaction.user.id, interaction.guild_id)
-    if active >= config.MAX_REMINDERS_PER_USER:
-        await interaction.response.send_message(
-            f"Bạn đã có {active} lịch nhắc đang chạy (tối đa {config.MAX_REMINDERS_PER_USER}). "
-            "Hủy bớt bằng `/remind_cancel` nhé.",
-            ephemeral=True,
-        )
-        return
-
-    next_run = next_run_utc(hour, minute)
-    reminder_id = await db.add_reminder(
-        guild_id=interaction.guild_id,
-        channel_id=target.id,
-        message=text,
-        repeat=repeat.value,
-        hour=hour,
-        minute=minute,
-        next_run_iso=next_run.isoformat(),
-        created_by=interaction.user.id,
-    )
-    repeat_text = "mỗi ngày" if repeat.value == "daily" else "một lần duy nhất"
-    next_run_vn = next_run.astimezone(config.VN_TZ)
-    await interaction.response.send_message(
-        f"✅ Đã đặt lịch #{reminder_id}: gửi **{repeat_text}** lúc **{hour:02d}:{minute:02d}** "
-        f"vào {target.mention}.\nLần chạy kế tiếp: "
-        f"{next_run_vn.strftime('%H:%M %d/%m/%Y')} (giờ VN)."
-    )
-
-
-@bot.tree.command(name="remind_list", description="Xem danh sách lịch nhắc đang hoạt động")
-async def remind_list_command(interaction: discord.Interaction):
-    rows = await db.list_reminders(interaction.guild_id)
-    if not rows:
-        await interaction.response.send_message("Server này chưa có lịch nhắc nào đang hoạt động.")
-        return
-
-    lines = []
-    for r in rows:
-        next_run_vn = datetime.fromisoformat(r["next_run_utc"]).astimezone(config.VN_TZ)
-        repeat_text = "hàng ngày" if r["repeat"] == "daily" else "1 lần"
-        channel = bot.get_channel(r["channel_id"])
-        channel_text = channel.mention if channel else f"(kênh {r['channel_id']})"
-        preview = r["message"] if len(r["message"]) <= 120 else r["message"][:117] + "..."
-        lines.append(
-            f"`#{r['id']}` — {channel_text} — {repeat_text} lúc "
-            f"{r['hour']:02d}:{r['minute']:02d} — kế tiếp: {next_run_vn.strftime('%H:%M %d/%m')} "
-            f"— bởi <@{r['created_by']}>\n └ {preview}"
-        )
-    chunks = split_message("📋 **Danh sách lịch nhắc:**\n" + "\n".join(lines), config.MAX_REPLY_CHARS)
-    await interaction.response.send_message(chunks[0])
-    for chunk in chunks[1:]:
-        await interaction.followup.send(chunk)
-
-
-@bot.tree.command(name="remind_cancel", description="Hủy một lịch nhắc theo ID")
-@app_commands.describe(id="ID của lịch nhắc (xem bằng /remind_list)")
-async def remind_cancel_command(interaction: discord.Interaction, id: int):
-    not_found = f"Không tìm thấy lịch nhắc `#{id}` đang hoạt động trong server này."
-    row = await db.get_reminder(id)
-    if row is None or not row["active"]:
-        await interaction.response.send_message(not_found, ephemeral=True)
-        return
-
-    guild_id = row["guild_id"] or getattr(
-        getattr(bot.get_channel(row["channel_id"]), "guild", None), "id", 0
-    )
-    if guild_id != interaction.guild_id:
-        # Cùng thông báo như "không tồn tại" để không lộ ID của server khác.
-        await interaction.response.send_message(not_found, ephemeral=True)
-        return
-
-    if row["created_by"] != interaction.user.id and not is_privileged(interaction.user):
-        await interaction.response.send_message(
-            "Chỉ người tạo lịch nhắc hoặc Admin/Owner mới hủy được.", ephemeral=True
-        )
-        return
-
-    await db.deactivate_reminder(id)
-    await interaction.response.send_message(f"🗑️ Đã hủy lịch nhắc `#{id}`.")
 
 
 @bot.tree.command(name="autochat_add", description="[Admin] Cho bot tự đọc & rep mọi tin nhắn trong kênh này")
@@ -1213,7 +1071,8 @@ async def autochat_add_command(
     if await db.add_auto_chat_channel(target.id, interaction.guild_id, interaction.user.id):
         auto_chat_channels.add(target.id)
         await interaction.response.send_message(
-            f"✅ Đã bật auto-chat ở {target.mention} — không cần mention, cứ gõ là bot rep."
+            f"✅ Đã bật auto-chat ở {target.mention} — không cần mention, cứ gõ là bot rep. "
+            "Tin nhắn trong kênh có thể được gửi tới AI provider đang cấu hình để xử lý."
         )
     else:
         auto_chat_channels.add(target.id)
@@ -1255,204 +1114,7 @@ async def autochat_list_command(interaction: discord.Interaction):
     await interaction.response.send_message("📋 **Kênh đang bật auto-chat:**\n" + "\n".join(mentions))
 
 
-# ======================================================================
-# Bảng điều khiển /botinfo tương tác
-# ======================================================================
-async def build_botinfo_embed(guild: discord.Guild | None) -> discord.Embed:
-    process = psutil.Process(os.getpid())
-    app_dir = os.path.dirname(os.path.abspath(__file__))
-    app_disk_used = await asyncio.to_thread(get_dir_size, app_dir)
-    db_size = os.path.getsize(config.DB_PATH) if os.path.exists(config.DB_PATH) else 0
-    uptime = datetime.now(timezone.utc) - BOT_START_TIME
-    total_members = sum(g.member_count or 0 for g in bot.guilds)
-    total_members_text = f"{total_members:,}".replace(",", ".")
-    active_reminders = await db.count_active_reminders_total()
-
-    guild_autochat_count = 0
-    if guild:
-        guild_channel_ids = {c.id for c in guild.text_channels}
-        guild_autochat_count = len(guild_channel_ids & auto_chat_channels)
-
-    description = (
-        f"🏓 **Ping:** {round(bot.latency * 1000)}ms\n"
-        f"⏱️ **Uptime:** {format_uptime(uptime)}\n"
-        f"🌐 **Số server:** {len(bot.guilds)}\n"
-        f"👥 **Tổng thành viên:** {total_members_text}\n"
-        f"💾 **RAM:** {format_bytes(process.memory_info().rss)} / {format_bytes(get_memory_limit_bytes())}\n"
-        f"🗂️ **Disk (thư mục bot):** {format_bytes(app_disk_used)}\n"
-        f"🧮 **Dung lượng DB:** {format_bytes(db_size)}\n"
-        f"🐍 **Python:** {platform.python_version()}\n"
-        f"📘 **discord.py:** {discord.__version__}\n"
-        f"✨ **AI:** {describe_ai_providers()}\n"
-        f"⏰ **Lịch nhắc đang chạy:** {active_reminders}\n"
-        f"📣 **Kênh auto-chat:** {len(auto_chat_channels)} kênh (Server này: {guild_autochat_count})\n\n"
-        "💡 *Dùng nút bên dưới để đổi cài đặt Auto-Chat.*"
-    )
-    embed = discord.Embed(
-        title="📊 Bảng Điều Khiển & Thông Số Bot",
-        description=description,
-        color=discord.Color.blurple(),
-    )
-    if bot.user and bot.user.display_avatar:
-        embed.set_thumbnail(url=bot.user.display_avatar.url)
-    embed.set_footer(text="Được tạo bởi ThTuan (@lmtuan612)")
-    return embed
-
-
-def build_autochat_embed(guild: discord.Guild, notice: str = "") -> discord.Embed:
-    guild_channel_ids = {c.id for c in guild.text_channels}
-    active_in_guild = sorted(guild_channel_ids & auto_chat_channels)
-    if active_in_guild:
-        channels_text = "\n".join(f"• <#{cid}>" for cid in active_in_guild)
-    else:
-        channels_text = "*(Chưa có kênh nào bật auto-chat trong server này)*"
-
-    desc_parts = []
-    if notice:
-        desc_parts.append(f"> 💬 **{notice}**\n")
-
-    desc_parts.append(
-        f"🏠 **Server:** {guild.name}\n"
-        f"📣 **Các kênh đang bật Auto-Chat ở server này ({len(active_in_guild)}):**\n"
-        f"{channels_text}\n\n"
-        f"🌐 **Tổng kênh Auto-Chat toàn bot:** {len(auto_chat_channels)}\n\n"
-        "📝 **Hướng dẫn:**\n"
-        "• Chọn kênh trong menu bên dưới để **Bật** hoặc **Tắt** nhanh auto-chat.\n"
-        "• Hoặc bấm **Bật/Tắt kênh hiện tại** để đổi trạng thái kênh bạn đang gửi lệnh."
-    )
-    embed = discord.Embed(
-        title="📣 Quản Lý Auto-Chat",
-        description="\n".join(desc_parts),
-        color=discord.Color.blue(),
-    )
-    if bot.user and bot.user.display_avatar:
-        embed.set_thumbnail(url=bot.user.display_avatar.url)
-    embed.set_footer(text="Chọn kênh từ menu để bật/tắt")
-    return embed
-
-
-class BotInfoMainView(discord.ui.View):
-    def __init__(self, guild: discord.Guild | None):
-        super().__init__(timeout=300)
-        self.guild = guild
-
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if not is_privileged(interaction.user):
-            await interaction.response.send_message("Lệnh này chỉ Admin/Owner mới dùng được nhé.", ephemeral=True)
-            return False
-        return True
-
-    @discord.ui.button(label="📣 Quản Lý Auto-Chat", style=discord.ButtonStyle.primary)
-    async def go_autochat(self, interaction: discord.Interaction, button: discord.ui.Button):
-        embed = build_autochat_embed(interaction.guild)
-        view = AutoChatManageView(interaction.guild)
-        await interaction.response.edit_message(embed=embed, view=view)
-
-    @discord.ui.button(label="🔄 Làm mới", style=discord.ButtonStyle.success)
-    async def refresh_info(self, interaction: discord.Interaction, button: discord.ui.Button):
-        embed = await build_botinfo_embed(interaction.guild)
-        await interaction.response.edit_message(embed=embed, view=self)
-
-
-class AutoChatChannelSelect(discord.ui.ChannelSelect):
-    def __init__(self, current_guild: discord.Guild):
-        super().__init__(
-            placeholder="Chọn kênh text để Bật / Tắt Auto-Chat...",
-            channel_types=[discord.ChannelType.text],
-            min_values=1,
-            max_values=1,
-            row=0,
-        )
-        self.current_guild = current_guild
-
-    async def callback(self, interaction: discord.Interaction):
-        channel_obj = self.values[0]
-        cid = channel_obj.id
-
-        if cid in auto_chat_channels:
-            await db.remove_auto_chat_channel(cid)
-            auto_chat_channels.discard(cid)
-            note = " (kênh nằm trong AUTO_CHAT_CHANNEL_IDS từ .env)" if cid in config.AUTO_CHAT_CHANNEL_IDS else ""
-            notice = f"🔕 Đã tắt auto-chat tại <#{cid}>{note}."
-        else:
-            target_channel = interaction.guild.get_channel(cid)
-            if isinstance(target_channel, discord.TextChannel):
-                perms = target_channel.permissions_for(interaction.guild.me)
-                if not (perms.view_channel and perms.send_messages):
-                    embed = build_autochat_embed(
-                        interaction.guild,
-                        notice=f"❌ Bot không có quyền xem hoặc gửi tin tại <#{cid}>.",
-                    )
-                    await interaction.response.edit_message(embed=embed, view=AutoChatManageView(interaction.guild))
-                    return
-
-            await db.add_auto_chat_channel(cid, interaction.guild_id, interaction.user.id)
-            auto_chat_channels.add(cid)
-            notice = f"✅ Đã bật auto-chat tại <#{cid}> — gõ là bot rep."
-
-        embed = build_autochat_embed(interaction.guild, notice=notice)
-        await interaction.response.edit_message(embed=embed, view=AutoChatManageView(interaction.guild))
-
-
-class AutoChatManageView(discord.ui.View):
-    def __init__(self, guild: discord.Guild):
-        super().__init__(timeout=300)
-        self.guild = guild
-        self.add_item(AutoChatChannelSelect(guild))
-
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if not is_privileged(interaction.user):
-            await interaction.response.send_message("Lệnh này chỉ Admin/Owner mới dùng được nhé.", ephemeral=True)
-            return False
-        return True
-
-    @discord.ui.button(label="⚡ Bật/Tắt kênh hiện tại", style=discord.ButtonStyle.primary, row=1)
-    async def toggle_current_channel(self, interaction: discord.Interaction, button: discord.ui.Button):
-        cid = interaction.channel_id
-        if cid in auto_chat_channels:
-            await db.remove_auto_chat_channel(cid)
-            auto_chat_channels.discard(cid)
-            note = " (kênh nằm trong AUTO_CHAT_CHANNEL_IDS từ .env)" if cid in config.AUTO_CHAT_CHANNEL_IDS else ""
-            notice = f"🔕 Đã tắt auto-chat tại <#{cid}>{note}."
-        else:
-            if isinstance(interaction.channel, discord.TextChannel):
-                perms = interaction.channel.permissions_for(interaction.guild.me)
-                if not (perms.view_channel and perms.send_messages):
-                    embed = build_autochat_embed(
-                        interaction.guild,
-                        notice="❌ Bot không có quyền xem/gửi tin ở kênh này.",
-                    )
-                    await interaction.response.edit_message(embed=embed, view=self)
-                    return
-            await db.add_auto_chat_channel(cid, interaction.guild_id, interaction.user.id)
-            auto_chat_channels.add(cid)
-            notice = f"✅ Đã bật auto-chat tại <#{cid}> — gõ là bot rep."
-
-        embed = build_autochat_embed(interaction.guild, notice=notice)
-        await interaction.response.edit_message(embed=embed, view=self)
-
-    @discord.ui.button(label="📋 Tất cả kênh (toàn bot)", style=discord.ButtonStyle.secondary, row=1)
-    async def list_all_channels(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not auto_chat_channels:
-            await interaction.response.send_message("Hiện chưa có kênh nào bật auto-chat trên toàn bộ bot.", ephemeral=True)
-            return
-        lines = []
-        for cid in sorted(auto_chat_channels):
-            ch = bot.get_channel(cid)
-            if ch:
-                lines.append(f"• <#{cid}> (Server: **{ch.guild.name}**)")
-            else:
-                lines.append(f"• Kênh ID `{cid}` *(không rõ server)*")
-        msg = "📋 **Danh sách kênh Auto-Chat toàn bot:**\n" + "\n".join(lines)
-        await interaction.response.send_message(msg, ephemeral=True)
-
-    @discord.ui.button(label="⬅️ Quay lại", style=discord.ButtonStyle.secondary, row=2)
-    async def back_to_main(self, interaction: discord.Interaction, button: discord.ui.Button):
-        embed = await build_botinfo_embed(interaction.guild)
-        view = BotInfoMainView(interaction.guild)
-        await interaction.response.edit_message(embed=embed, view=view)
-
-
+# Dashboard và giao diện Auto-Chat đã được chuyển sang botinfo.py.
 @bot.tree.command(name="botinfo", description="[Admin/Owner] Bảng điều khiển xem & quản lý bot (Auto-Chat)")
 async def botinfo_command(interaction: discord.Interaction):
     if not is_privileged(interaction.user):
@@ -1462,6 +1124,16 @@ async def botinfo_command(interaction: discord.Interaction):
     embed = await build_botinfo_embed(interaction.guild)
     view = BotInfoMainView(interaction.guild)
     await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+
+
+botinfo.setup(
+    bot_instance=bot,
+    database=db,
+    channels=auto_chat_channels,
+    privilege_check=is_privileged,
+    provider_description=describe_ai_providers,
+    start_time=BOT_START_TIME,
+)
 
 
 # ======================================================================

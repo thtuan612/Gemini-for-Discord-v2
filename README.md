@@ -37,7 +37,6 @@
 | 🧠 | **Hiểu ngữ cảnh kênh chat** | Tự động đọc các tin nhắn gần nhất trong kênh và tin nhắn trích dẫn (reply/quote) để hiểu đại từ ("nó", "đó", "họ") và trả lời đúng mạch đàm thoại. |
 | 🖼️ | **Phân tích hình ảnh (Vision)** | Hỗ trợ tải song song tối đa 4 ảnh (`png`, `jpg`, `webp`, `heic`), kích thước lên tới 8 MB mỗi ảnh. |
 | ⚡ | **Hỗ trợ Gemini 3.x & Thinking** | Tương thích SDK `google-genai` mới nhất, cấu hình được mức độ suy nghĩ (`THINKING_LEVEL`), tự động retry khi gặp lỗi 429 hoặc quá tải tạm thời. |
-| ⏰ | **Hệ thống nhắc hẹn (Reminder)** | Hỗ trợ nhắc 1 lần hoặc lặp lại hàng ngày theo **giờ Việt Nam (GMT+7)**, tự động bù giờ và dọn dẹp lịch sử cũ. |
 | 🎛️ | **Bảng điều khiển tương tác** | Giao diện nút bấm và menu chọn (Discord UI Components) tích hợp ngay trong `/botinfo` để quản lý Auto-Chat và danh sách server cho phép. |
 | 🔒 | **Phân tách dữ liệu & Chặn spam** | Lưu lịch sử hội thoại riêng biệt theo từng cặp `(guild_id, user_id)`, kiểm soát hàng đợi tối đa 3 tác vụ/user để tránh nghẽn. |
 | 🛡️ | **An toàn & Anti-mention** | Mặc định cấu hình `allowed_mentions=NO_MENTIONS` triệt tiêu nguy cơ AI bị lợi dụng để tag `@everyone`, `@here` hoặc role spam. |
@@ -90,7 +89,7 @@ Chi tiết đầy đủ các tùy chọn cấu hình trong [`.env.example`](.env
 ### Gemini AI
 - `GEMINI_ENABLED`: Bật/tắt provider Gemini (mặc định: `true`).
 - `GEMINI_MODEL`: Model Gemini chính (mặc định: `gemini-3.5-flash-lite`).
-- `GEMINI_FALLBACK_MODELS`: Các model dự phòng, cách nhau bằng dấu phẩy. Bot thử lần lượt khi model trước gặp quota, 429 hoặc lỗi tạm thời (5xx, timeout).
+- `GEMINI_FALLBACK_MODELS`: Các model dự phòng, cách nhau bằng dấu phẩy. Bot thử lần lượt khi model trước gặp quota, 429 hoặc lỗi tạm thời (5xx, timeout). Model sai tên / không tồn tại / không có quyền (404, 403, 400 "model ...") cũng được bỏ qua sang model kế tiếp và bị loại tạm 10 phút; lúc khởi động bot ghi cảnh báo nếu model không có trong danh sách của Google.
 - `MAX_OUTPUT_TOKENS`: Giới hạn token đầu ra (mặc định: `1024`).
 - `THINKING_LEVEL`: Mức suy nghĩ của mô hình (`minimal`, `low`, `medium`, `high`, hoặc để trống).
 - `GEMINI_TIMEOUT`: Thời gian chờ tối đa cho mỗi request (giây, mặc định: `30`).
@@ -111,13 +110,17 @@ Chi tiết đầy đủ các tùy chọn cấu hình trong [`.env.example`](.env
 - `AUTO_CHAT_CHANNEL_IDS`: Danh sách ID kênh bật sẵn chế độ tự động trò chuyện.
 - `ADMIN_ROLE_IDS`: ID các role có quyền Admin điều khiển bot (bên cạnh Owner và quyền Administrator).
 - `AUTO_CHAT_COOLDOWN_SECONDS`: Giãn cách tối thiểu giữa các lần kích hoạt auto-chat của 1 người dùng (mặc định: `3` giây).
-- `CHANNEL_HISTORY_LIMIT`: Số tin nhắn gần nhất đọc để tạo ngữ cảnh hội thoại (mặc định: `10`, đặt `0` để tắt).
+- `CHANNEL_HISTORY_LIMIT`: Số tin nhắn gần nhất Auto-Chat/mention và `/chat` đọc để tạo ngữ cảnh (mặc định: `5`, tối đa `50`, đặt `0` để tắt). Chỉ lấy tin của đúng kênh đang chat và đứng trước tin nhắn/lệnh hiện tại; tin đã bị xóa hoặc sửa không còn nằm trong ngữ cảnh.
+- `CHAT_INCLUDE_CHANNEL_CONTEXT`: Cho phép `/chat` gửi lịch sử kênh (có thể chứa tin nhắn của thành viên khác) tới AI provider; mặc định `true`. Đặt `false` nếu muốn `/chat` chỉ dùng lịch sử riêng của người gọi.
 - `STATUS_TYPE` & `STATUS_TEXT`: Trạng thái hoạt động hiển thị của bot (ví dụ: `playing`, `Where Winds Meet`).
 
-### Cơ sở dữ liệu & Nhắc hẹn
-- `DB_PATH`: Đường dẫn file SQLite (mặc định: `conversations.db`).
+### Cơ sở dữ liệu
+- `DB_PATH`: Đường dẫn file SQLite (mặc định: `conversations.db`). Nếu file bị hỏng, bot tự đổi tên thành `<DB_PATH>.corrupt-<thời gian>` (giữ tối đa 3 bản, quyền 0600), tạo DB mới và cố cứu lại danh sách kênh Auto-Chat / server được phép; lịch sử hội thoại trong file hỏng không khôi phục được. Lỗi tạm thời (khóa file, thiếu quyền, đầy ổ đĩa) KHÔNG kích hoạt cơ chế này.
 - `HISTORY_RETENTION_DAYS`: Tự động xóa lịch sử hội thoại sau N ngày (mặc định: `30`, `0` = giữ mãi).
-- `REMINDER_RETENTION_DAYS`: Tự động xóa reminder đã tắt sau N ngày (mặc định: `30`).
+- `MAX_HISTORY_TURNS`: Số lượt hỏi-đáp tối đa nhớ cho mỗi người dùng (mặc định: `10`, tối đa `50`).
+- `MAX_HISTORY_CHARS`: Tổng số ký tự tối đa của lịch sử mỗi người dùng, vừa lưu DB vừa gửi cho AI (mặc định: `24000`, `0` = không giới hạn). Vượt quá thì lượt cũ nhất bị bỏ trước, lượt gần nhất luôn được giữ.
+
+Lịch sử đọc từ DB luôn được làm sạch trước khi dùng (bỏ mục sai vai trò/rỗng, đảm bảo xen kẽ user/model và bắt đầu bằng `user`) để dữ liệu hỏng không làm Gemini từ chối request. Khi bot bị đuổi/rời một server, lịch sử hội thoại và cấu hình auto-chat của server đó bị xóa; khi một kênh bị xóa, kênh đó cũng được gỡ khỏi danh sách auto-chat.
 
 > [!TIP]
 > Bạn có thể tùy chỉnh tính cách, phong cách xưng hô và chỉ dẫn hệ thống của bot bằng cách chỉnh sửa trực tiếp nội dung file [`prompt.txt`](prompt.txt).
@@ -130,9 +133,6 @@ Chi tiết đầy đủ các tùy chọn cấu hình trong [`.env.example`](.env
 | :--- | :---: | :--- |
 | `/chat <message> [image]` | Mọi người | Gửi câu hỏi kèm hình ảnh (tùy chọn) để trò chuyện cùng AI. |
 | `/reset` | Mọi người | Xóa sạch ngữ cảnh lịch sử trò chuyện của chính bạn tại server hiện tại. |
-| `/remind <time> <message> <repeat> [channel]` | Mọi người | Đặt lịch hẹn gửi tin tự động (theo định dạng 24h `HH:MM` giờ Việt Nam). |
-| `/remind_list` | Mọi người | Xem danh sách các lịch nhắc đang kích hoạt trong server. |
-| `/remind_cancel <id>` | Người tạo / Admin | Hủy một lịch nhắc theo ID. |
 | `/autochat_list` | Mọi người | Liệt kê các kênh text đang bật tính năng Auto-Chat trong server. |
 | `/autochat_add [channel]` | Admin / Owner | Kích hoạt Auto-Chat cho kênh chỉ định (hoặc kênh hiện tại). |
 | `/autochat_remove [channel]` | Admin / Owner | Tắt tính năng Auto-Chat tại kênh chỉ định. |
@@ -144,7 +144,7 @@ Chi tiết đầy đủ các tùy chọn cấu hình trong [`.env.example`](.env
 
 Lệnh `/botinfo` cung cấp giao diện quản trị trực quan với các thành phần Discord UI Components:
 
-1. **Thông số thời gian thực:** Ping, Uptime, RAM/Disk usage, phiên bản Python & discord.py, model Gemini đang chạy, số reminder và kênh auto-chat.
+1. **Thông số thời gian thực:** Ping, Uptime, RAM/Disk usage, phiên bản Python & discord.py, provider AI và kênh auto-chat.
 2. **Quản lý Auto-Chat:**
    - Chọn nhanh bất kỳ kênh text nào qua menu chọn kênh (`ChannelSelect`) để bật/tắt.
    - Nút bật/tắt nhanh ngay tại kênh đang mở bảng điều khiển.
@@ -158,8 +158,11 @@ Lệnh `/botinfo` cung cấp giao diện quản trị trực quan với các th�
 .
 ├── bot.py               # Xử lý sự kiện Discord, slash commands, quản lý state và gọi Gemini API
 ├── config.py            # Nạp và chuẩn hóa cấu hình từ biến môi trường (.env)
+├── channel_context.py   # Cache tin nhắn theo kênh và dựng ngữ cảnh (đúng kênh, đúng thời điểm)
+├── botinfo.py           # Bảng điều khiển /botinfo và giao diện Auto-Chat
+├── prompt_security.py   # Ranh giới tin cậy: dữ liệu Discord luôn là dữ liệu, không phải chỉ thị
 ├── literouter.py        # Client Literouter (OpenAI-compatible) + danh sách model tự cập nhật/cache
-├── db.py                # Wrapper SQLite async (WAL mode, migrations, CRUD lịch sử & reminder)
+├── db.py                # Wrapper SQLite async (WAL mode, migrations, CRUD lịch sử)
 ├── utils.py             # Các hàm tiện ích: cắt tin nhắn, lọc tin trivial, tính dung lượng, parse giờ
 ├── prompt.txt           # System prompt mặc định định hình phong cách phản hồi của AI
 ├── .env.example         # File mẫu cấu hình các biến môi trường
@@ -168,7 +171,8 @@ Lệnh `/botinfo` cung cấp giao diện quản trị trực quan với các th�
 └── tests/               # Bộ unit test toàn diện
     ├── __init__.py
     ├── test_core.py     # Test suite: utils, database, channel context và retry logic Gemini
-    └── test_providers.py # Test fallback Gemini, client Literouter, cache danh sách model
+    ├── test_providers.py # Test fallback Gemini, client Literouter, cache danh sách model
+    └── test_data_integrity.py # Test SQLite, lịch sử hội thoại, cache ngữ cảnh kênh, giới hạn cấu hình
 ```
 
 ---
@@ -178,14 +182,15 @@ Lệnh `/botinfo` cung cấp giao diện quản trị trực quan với các th�
 Dự án đi kèm bộ kiểm thử toàn diện kiểm tra tính đúng đắn của logic xử lý chuỗi, cơ sở dữ liệu SQLite đa luồng và các trường hợp lỗi API (mock):
 
 ```bash
-# Chạy toàn bộ test suite
-python -m unittest tests/test_core.py -v
+# Chạy toàn bộ test suite (giống GitHub Actions)
+python -m unittest discover -s tests -v
 ```
 
 **Các nhóm kiểm thử chính:**
-- `UtilsTests`: Kiểm tra hàm chia đoạn văn bản (`split_message`), tính thời gian lặp (`next_run_utc`), parse thời gian (`parse_hhmm`).
-- `DatabaseTests`: Kiểm tra phân tách dữ liệu theo Guild/User, transaction an toàn, tự động dọn dẹp (purge) và migration dữ liệu cũ.
+- `UtilsTests`: Kiểm tra giới hạn và cách chia đoạn văn bản (`split_message`).
+- `DatabaseTests`: Kiểm tra phân tách dữ liệu theo Guild/User, transaction an toàn, tự động dọn dẹp (purge), migration và bảo toàn dữ liệu hiện có.
 - `ChannelContextTests`: Kiểm tra định dạng ngữ cảnh các tin nhắn gần nhất và tin nhắn trích dẫn.
+- `tests/test_data_integrity.py`: Quyền file SQLite (kể cả DB cũ), transaction/rollback, truy cập đồng thời, làm sạch và giới hạn lịch sử, cache ngữ cảnh đúng kênh/đúng thời điểm, vô hiệu hóa cache khi tin bị xóa/sửa và dọn dữ liệu khi bot rời server.
 - `AskGeminiRetryTests`: Giả lập các phản hồi lỗi từ Google Gemini (429 Rate Limit, 5xx Server Error, Timeout, Client Error) để đảm bảo bot retry và phản hồi chính xác.
 
 ---
@@ -193,7 +198,8 @@ python -m unittest tests/test_core.py -v
 ## 🛡️ Bảo mật & Tối ưu
 
 - **Bảo mật bí mật:** File `.env` và các tệp dữ liệu SQLite (`*.db`, `*.db-wal`) đã được cấu hình trong `.gitignore` để không bao giờ bị lộ lên Git repository.
-- **Tối ưu bộ nhớ cache:** Áp dụng bộ nhớ đệm LRU cho lịch sử chat và bộ đếm thành viên bot để giảm thiểu truy vấn lặp lại.
+- **Tối ưu bộ nhớ cache:** Áp dụng LRU có TTL 5 phút cho lịch sử chat; dữ liệu cũ được nạp lại từ SQLite thay vì giữ vô thời hạn trong RAM.
+- **Quyền riêng tư dữ liệu:** `/chat` đọc tối đa 5 tin nhắn gần nhất trong kênh theo mặc định (có thể tắt bằng `CHAT_INCLUDE_CHANNEL_CONTEXT=false`); retention tự động xóa lịch sử sau 30 ngày, SQLite bật `secure_delete`, giới hạn quyền file DB cùng file phụ `-wal`/`-shm` ở `0600` trên hệ thống POSIX (kể cả DB đã tồn tại từ phiên bản cũ) và checkpoint WAL sau thao tác xóa.
 - **Xử lý bất đồng bộ chuẩn mực:** Mọi thao tác I/O với database và filesystem đều được đưa vào thread pool (`asyncio.to_thread`), tránh block event loop chính của Discord.
 
 ---

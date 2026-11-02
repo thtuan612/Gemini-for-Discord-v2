@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import os
-from datetime import timedelta, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -10,12 +9,6 @@ from dotenv import load_dotenv
 load_dotenv()
 
 BASE_DIR = Path(__file__).resolve().parent
-
-try:
-    from zoneinfo import ZoneInfo
-    VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
-except Exception:
-    VN_TZ = timezone(timedelta(hours=7), name="Asia/Ho_Chi_Minh")
 
 
 def _int(name: str, default: int) -> int:
@@ -113,9 +106,15 @@ AI_PROVIDER_ORDER = [p for p in dict.fromkeys(x.lower() for x in _csv("AI_PROVID
 AI_PROVIDER_ORDER += [p for p in _known_providers if p not in AI_PROVIDER_ORDER]
 
 # --- Hội thoại ---
-MAX_HISTORY_TURNS = _int("MAX_HISTORY_TURNS", 10)
+# Giá trị âm / quá lớn được kéo về khoảng hợp lệ: deque(maxlen<0) sẽ làm mọi tin nhắn bị lỗi,
+# còn giá trị quá lớn làm prompt và DB phình to.
+MAX_HISTORY_TURNS = min(max(0, _int("MAX_HISTORY_TURNS", 10)), 50)
+# Tổng số ký tự tối đa của lịch sử hội thoại mỗi người dùng (lưu DB và gửi cho AI). 0 = không giới hạn.
+MAX_HISTORY_CHARS = max(0, _int("MAX_HISTORY_CHARS", 24000))
 HISTORY_RETENTION_DAYS = _int("HISTORY_RETENTION_DAYS", 30)  # 0 = không tự xóa
-CHANNEL_HISTORY_LIMIT = _int("CHANNEL_HISTORY_LIMIT", 10)  # số tin nhắn kênh gần nhất đọc để hiểu context (0 = tắt)
+# Số tin nhắn kênh gần nhất đọc để hiểu context (0 = tắt, tối đa 50)
+CHANNEL_HISTORY_LIMIT = min(max(0, _int("CHANNEL_HISTORY_LIMIT", 5)), 50)
+CHAT_INCLUDE_CHANNEL_CONTEXT = _bool("CHAT_INCLUDE_CHANNEL_CONTEXT", True)  # /chat mặc định đọc 5 tin nhắn gần nhất trong kênh
 MAX_REPLY_CHARS = 1900
 
 # --- Ảnh ---
@@ -138,12 +137,6 @@ AUTO_CHAT_COOLDOWN_SECONDS = _int("AUTO_CHAT_COOLDOWN_SECONDS", 3)
 ADMIN_ROLE_IDS = _int_set("ADMIN_ROLE_IDS")
 # Tùy chọn, mặc định TẮT vì so khớp theo tên role dễ bị giả mạo.
 ADMIN_ROLE_NAMES = _str_set("ADMIN_ROLE_NAMES")
-
-# --- Reminder ---
-REMINDER_GRACE_MINUTES = _int("REMINDER_GRACE_MINUTES", 10)
-MAX_REMINDERS_PER_USER = _int("MAX_REMINDERS_PER_USER", 20)
-MAX_REMINDER_LENGTH = _int("MAX_REMINDER_LENGTH", 1500)
-REMINDER_RETENTION_DAYS = _int("REMINDER_RETENTION_DAYS", 30)  # xóa reminder đã tắt sau N ngày (0 = giữ mãi)
 
 # --- Database ---
 DB_PATH = os.getenv("DB_PATH", "conversations.db")

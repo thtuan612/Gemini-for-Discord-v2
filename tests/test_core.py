@@ -107,6 +107,14 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
             mode = stat.S_IMODE(os.stat(self.db.path).st_mode)
             self.assertEqual(mode, 0o600)
 
+    async def test_database_wal_permissions_are_private(self):
+        if os.name == "posix":
+            await self.db.save_history_raw(1, 99, "private conversation")
+            wal_path = self.db.path + "-wal"
+            if os.path.exists(wal_path):
+                mode = stat.S_IMODE(os.stat(wal_path).st_mode)
+                self.assertEqual(mode & 0o077, 0)
+
     async def test_database_creates_parent_directory(self):
         nested_path = os.path.join(self.tmp.name, "nested", "data", "bot.db")
         nested = Database(nested_path)

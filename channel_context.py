@@ -105,48 +105,57 @@ class ChannelContext:
 
         messages: list[discord.Message] = []
         channel_id = getattr(channel, "id", None)
-        cached = self._messages.get(channel_id) if channel_id else None
+        cached = list(self._messages.get(channel_id, ())) if channel_id else []
+        current_id = getattr(current_message, "id", None)
 
-        if cached:
-            for message in reversed(cached):
-                if current_message is not None and getattr(message, "id", None) == getattr(current_message, "id", None):
-                    continue
-                content = (
-                    getattr(message, "clean_content", None)
-                    or getattr(message, "content", None)
-                    or ""
-                ).strip()
-                attachments = getattr(message, "attachments", None) or []
-                if not content and not attachments:
-                    continue
-                messages.append(message)
-                if len(messages) >= limit:
-                    break
-            messages.reverse()
-        elif hasattr(channel, "history"):
+        def is_before_current(message: discord.Message) -> bool:
+            message_id = getattr(message, "id", None)
+            if current_id is None or message_id is None:
+                return message is not current_message
+            # Discord snowflake IDs preserve chronological order.
+            return message_id < current_id
+
+        def has_content(message: discord.Message) -> bool:
+            content = (
+                getattr(message, "clean_content", None)
+                or getattr(message, "content", None)
+                or ""
+            ).strip()
+            return bool(content or getattr(message, "attachments", None))
+
+        # Cache có thể đã chứa tin nhắn hiện tại (on_message ghi trước khi xử lý)
+        # hoặc cả tin nhắn đến sau do các event được xử lý đồng thời.
+        cached = [
+            message for message in cached
+            if is_before_current(message) and has_content(message)
+        ]
+        if current_id is not None:
+            cached.sort(key=lambda item: getattr(item, "id", 0))
+        messages = cached[-limit:]
+
+        # Khi bot vừa khởi động, cache thường chỉ có tin nhắn hiện tại hoặc vài tin.
+        # Bù phần còn thiếu bằng lịch sử Discord, lấy các tin cũ hơn cache.
+        missing = limit - len(messages)
+        if missing > 0 and hasattr(channel, "history"):
             try:
-                before = current_message if current_message is not None else None
-                async for message in channel.history(limit=limit, before=before):
-                    if current_message is not None and getattr(message, "id", None) == getattr(current_message, "id", None):
+                before = messages[0] if messages else current_message
+                older: list[discord.Message] = []
+                async for message in channel.history(limit=missing, before=before):
+                    if not is_before_current(message) or not has_content(message):
                         continue
-                    content = (
-                        getattr(message, "clean_content", None)
-                        or getattr(message, "content", None)
-                        or ""
-                    ).strip()
-                    attachments = getattr(message, "attachments", None) or []
-                    if not content and not attachments:
+                    if any(getattr(item, "id", None) == getattr(message, "id", None) for item in messages):
                         continue
-                    messages.append(message)
+                    older.append(message)
+                older.reverse()  # Discord trả lịch sử từ mới đến cũ.
+                messages = (older + messages)[-limit:]
+                for message in older:
+                    self.record_message(message)
             except Exception as exc:
                 self.log.warning(
                     "Không thể đọc lịch sử tin nhắn kênh %s: %s",
                     getattr(channel, "id", None),
-                    exc,
+                    type(exc).__name__,
                 )
-            messages.reverse()
-            for message in messages:
-                self.record_message(message)
 
         lines: list[str] = []
         if messages:

@@ -462,7 +462,7 @@ class ConfigTests(unittest.TestCase):
         self.assertTrue(config.GEMINI_ENABLED)
         self.assertEqual(config.GEMINI_MODELS[0], config.GEMINI_MODEL)
         self.assertEqual(sorted(config.AI_PROVIDER_ORDER), ["gemini", "literouter"])
-        self.assertFalse(config.CHAT_INCLUDE_CHANNEL_CONTEXT)
+        self.assertTrue(config.CHAT_INCLUDE_CHANNEL_CONTEXT)
         self.assertFalse(config.LITEROUTER_ENABLED)
         self.assertEqual(config.LITEROUTER_BASE_URL, "https://literouter.fun/api/v1")
 

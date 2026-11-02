@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import re
 from datetime import timedelta
+from typing import Iterable
 
 import psutil
 
@@ -34,6 +35,48 @@ def split_message(text: str, limit: int = 1900) -> list[str]:
         text = text[cut:].lstrip()
 
     return chunks or ["…"]
+
+
+HISTORY_ROLES = ("user", "model")
+
+
+def normalize_history(
+    entries: Iterable[tuple[object, object]],
+    *,
+    max_entries: int | None,
+    max_chars: int,
+) -> list[tuple[str, str]]:
+    """Làm sạch và giới hạn lịch sử hội thoại [(role, text), ...] theo thứ tự cũ → mới.
+
+    Dữ liệu đọc từ DB có thể hỏng (sửa tay, bản cũ, ghi dở) và Gemini trả lỗi 400 nếu lịch sử
+    không bắt đầu bằng `user` hoặc không xen kẽ user/model, làm người dùng đó kẹt vĩnh viễn
+    đến khi /reset. Hàm này đảm bảo kết quả luôn: chỉ gồm vai trò hợp lệ với nội dung chuỗi
+    không rỗng, xen kẽ user/model, bắt đầu bằng `user`, kết thúc bằng `model`, không quá
+    `max_entries` phần tử và không quá `max_chars` ký tự (0 = không giới hạn ký tự).
+    Khi vượt giới hạn, lượt CŨ NHẤT bị bỏ trước; luôn giữ lại lượt gần nhất.
+    """
+    cleaned: list[tuple[str, str]] = []
+    for role, text in entries:
+        if role not in HISTORY_ROLES or not isinstance(text, str) or not text.strip():
+            continue
+        if cleaned and cleaned[-1][0] == role:
+            cleaned[-1] = (role, text)  # hai lượt liền nhau cùng vai trò: giữ lượt mới hơn
+        else:
+            cleaned.append((role, text))
+
+    if max_entries is not None:
+        cleaned = cleaned[-max_entries:] if max_entries > 0 else []
+    while cleaned and cleaned[0][0] != "user":
+        cleaned.pop(0)
+    if cleaned and cleaned[-1][0] == "user":
+        cleaned.pop()  # câu hỏi chưa có câu trả lời
+
+    if max_chars > 0:
+        cap = max(1, max_chars // 2)  # mỗi phần tử tối đa nửa ngân sách → một lượt luôn vừa ngân sách
+        cleaned = [(role, text[:cap]) for role, text in cleaned]
+        while len(cleaned) > 2 and sum(len(text) for _, text in cleaned) > max_chars:
+            del cleaned[:2]  # bỏ nguyên một lượt (user + model) cũ nhất
+    return cleaned
 
 
 def get_dir_size(path: str) -> int:

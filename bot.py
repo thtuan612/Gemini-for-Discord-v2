@@ -26,6 +26,7 @@ from db import Database
 from prompt_security import PROMPT_SECURITY_INSTRUCTION, build_untrusted_payload
 from utils import (
     is_trivial_message,
+    normalize_history,
     split_message,
 )
 
@@ -193,27 +194,36 @@ def _cache_put(key: HistoryKey, history: deque) -> None:
         _history_cache_times.pop(evicted, None)
 
 
+def _history_maxlen() -> int:
+    return max(0, config.MAX_HISTORY_TURNS) * 2
+
+
+def _history_to_deque(entries: list[tuple[str, str]]) -> deque:
+    return deque(
+        (types.Content(role=role, parts=[types.Part(text=text)]) for role, text in entries),
+        maxlen=_history_maxlen(),
+    )
+
+
 async def load_history(key: HistoryKey) -> deque:
     cached = _cache_get(key)
     if cached is not None:
         return cached
-    history: deque = deque(maxlen=config.MAX_HISTORY_TURNS * 2)
+    entries: list[tuple[object, object]] = []
     raw = await db.load_history_raw(*key)
     if raw:
         try:
             items = json.loads(raw)
             if not isinstance(items, list):
                 raise ValueError("history must be a list")
-            for item in items:
-                if not isinstance(item, dict):
-                    continue
-                role, text = item.get("role"), item.get("text")
-                if role not in {"user", "model"} or not isinstance(text, str):
-                    continue
-                history.append(types.Content(role=role, parts=[types.Part(text=text)]))
+            entries = [(item.get("role"), item.get("text")) for item in items if isinstance(item, dict)]
         except (json.JSONDecodeError, ValueError, TypeError):
             log.warning("Lịch sử lỗi format, bỏ qua")
-            history.clear()
+    # Dữ liệu trong DB không được tin tưởng: làm sạch vai trò/thứ tự và áp giới hạn dung lượng.
+    normalized = normalize_history(entries, max_entries=_history_maxlen(), max_chars=config.MAX_HISTORY_CHARS)
+    if len(normalized) != len(entries):
+        log.info("Đã làm sạch lịch sử hội thoại đọc từ DB (%d → %d mục)", len(entries), len(normalized))
+    history = _history_to_deque(normalized)
     _cache_put(key, history)
     return history
 
@@ -221,14 +231,18 @@ async def load_history(key: HistoryKey) -> deque:
 async def save_history(key: HistoryKey, history: deque) -> None:
     # Chỉ lưu các turn thuần text (loại bỏ turn có ảnh) — ảnh không serialize được và
     # khi reload sẽ thiếu context ảnh, nhưng còn hơn để role là MagicMock crash JSON.
-    serializable = [
-        {"role": c.role, "text": c.parts[0].text}
+    entries = [
+        (c.role, c.parts[0].text)
         for c in history
         if c.parts and getattr(c.parts[0], "text", None) is not None
     ]
-    raw = json.dumps(serializable, ensure_ascii=False)
-    await db.save_history_raw(*key, raw)
+    normalized = normalize_history(entries, max_entries=history.maxlen, max_chars=config.MAX_HISTORY_CHARS)
+    # Bộ nhớ luôn khớp với thứ sẽ được lưu (đã áp giới hạn), kể cả khi ghi DB bên dưới thất bại.
+    history.clear()
+    history.extend(types.Content(role=role, parts=[types.Part(text=text)]) for role, text in normalized)
     _cache_put(key, history)
+    raw = json.dumps([{"role": role, "text": text} for role, text in normalized], ensure_ascii=False)
+    await db.save_history_raw(*key, raw)
 
 
 async def delete_history(key: HistoryKey) -> None:
@@ -610,7 +624,12 @@ async def ask_gemini(
 
     history.append(types.Content(role="user", parts=[types.Part(text=user_message)]))
     history.append(types.Content(role="model", parts=[types.Part(text=reply)]))
-    await save_history(key, history)
+    try:
+        await save_history(key, history)
+    except Exception:
+        # Câu trả lời đã tạo xong: vẫn gửi cho người dùng. Bộ nhớ đã có lượt này và sẽ được
+        # ghi xuống DB ở lần lưu thành công kế tiếp.
+        log.exception("Không lưu được lịch sử hội thoại xuống DB")
     return reply
 
 
@@ -674,9 +693,10 @@ async def build_channel_context(
     current_message: discord.Message | None = None,
     ref_msg: discord.Message | None = None,
     limit: int = config.CHANNEL_HISTORY_LIMIT,
+    before_id: int | None = None,
 ) -> str:
     return await channel_context_manager.build(
-        channel, current_message=current_message, ref_msg=ref_msg, limit=limit
+        channel, current_message=current_message, ref_msg=ref_msg, limit=limit, before_id=before_id
     )
 
 
@@ -787,6 +807,67 @@ async def process_chat_message(
 
 
 @bot.event
+async def on_raw_message_delete(payload: discord.RawMessageDeleteEvent):
+    # Tin đã bị xóa không được tiếp tục đưa vào ngữ cảnh gửi cho AI.
+    channel_context_manager.remove_messages(payload.channel_id, [payload.message_id])
+
+
+@bot.event
+async def on_raw_bulk_message_delete(payload: discord.RawBulkMessageDeleteEvent):
+    channel_context_manager.remove_messages(payload.channel_id, payload.message_ids)
+
+
+@bot.event
+async def on_raw_message_edit(payload: discord.RawMessageUpdateEvent):
+    # Bản đã cache có thể cũ: bỏ đi thay vì giữ nội dung trước khi sửa.
+    # on_message_edit (nếu discord.py còn giữ tin trong cache) sẽ ghi lại bản mới.
+    channel_context_manager.remove_messages(payload.channel_id, [payload.message_id])
+
+
+@bot.event
+async def on_message_edit(before: discord.Message, after: discord.Message):
+    if after.guild is None:
+        return
+    if after.author.bot and not (bot.user and after.author.id == bot.user.id):
+        return
+    if allowed_guild_ids and after.guild.id not in allowed_guild_ids:
+        return
+    record_channel_message(after)
+
+
+@bot.event
+async def on_guild_channel_delete(channel: discord.abc.GuildChannel):
+    channel_context_manager.forget_channel(channel.id)
+    if channel.id in auto_chat_channels:
+        auto_chat_channels.discard(channel.id)
+        try:
+            await db.remove_auto_chat_channel(channel.id)
+        except Exception:
+            log.exception("Không xóa được kênh auto-chat đã bị xóa khỏi DB")
+
+
+@bot.event
+async def on_guild_remove(guild: discord.Guild):
+    """Bot bị đuổi/rời server: xóa dữ liệu của server đó (lịch sử hội thoại, cấu hình auto-chat, cache)."""
+    try:
+        for channel_id in await db.list_auto_chat_channels(guild.id):
+            auto_chat_channels.discard(channel_id)
+        for channel in getattr(guild, "channels", ()):
+            auto_chat_channels.discard(channel.id)
+            channel_context_manager.forget_channel(channel.id)
+        channel_context_manager.forget_guild(guild.id)
+        for cache_key in [k for k in history_cache if k[0] == guild.id]:
+            history_cache.pop(cache_key, None)
+            _history_cache_times.pop(cache_key, None)
+        history_rows, channel_rows = await db.delete_guild_data(guild.id)
+        log.info(
+            "Đã dọn dữ liệu của server %s: %d lịch sử, %d kênh auto-chat", guild.id, history_rows, channel_rows
+        )
+    except Exception:
+        log.exception("Không dọn được dữ liệu của server %s sau khi rời", guild.id)
+
+
+@bot.event
 async def on_message(message: discord.Message):
     if message.author.bot or message.guild is None:
         return
@@ -815,7 +896,10 @@ async def on_message(message: discord.Message):
 async def _send_followup_chunks(interaction: discord.Interaction, text: str) -> None:
     try:
         for chunk in split_message(text, config.MAX_REPLY_CHARS):
-            await interaction.followup.send(chunk)
+            sent = await interaction.followup.send(chunk)
+            # Giống luồng mention/auto-chat: câu trả lời của bot phải có trong ngữ cảnh kênh về sau.
+            if isinstance(sent, discord.Message):
+                record_channel_message(sent)
     except discord.HTTPException as e:
         log.error("Gửi followup thất bại: %s", e)
 
@@ -832,10 +916,11 @@ async def chat_command(
         async with user_gate(key, allow_queue=False):
             await interaction.response.defer(thinking=True)
             image_parts = await build_image_parts([image] if image else [])
-            # Slash /chat là phiên hỏi riêng: không gửi tin nhắn gần đây của
-            # thành viên khác sang nhà cung cấp AI trừ khi admin chủ động bật opt-in.
+            # Mặc định /chat đọc vài tin gần nhất của kênh để hiểu mạch hội thoại; đặt
+            # CHAT_INCLUDE_CHANNEL_CONTEXT=false để /chat không gửi tin của thành viên khác tới AI.
+            # before_id=interaction.id: chỉ lấy tin trước thời điểm gọi lệnh, không lấy tin đến sau.
             channel_context = (
-                await build_channel_context(interaction.channel)
+                await build_channel_context(interaction.channel, before_id=interaction.id)
                 if config.CHAT_INCLUDE_CHANNEL_CONTEXT and config.CHANNEL_HISTORY_LIMIT > 0
                 else ""
             )

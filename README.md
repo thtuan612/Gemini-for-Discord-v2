@@ -110,13 +110,17 @@ Chi tiết đầy đủ các tùy chọn cấu hình trong [`.env.example`](.env
 - `AUTO_CHAT_CHANNEL_IDS`: Danh sách ID kênh bật sẵn chế độ tự động trò chuyện.
 - `ADMIN_ROLE_IDS`: ID các role có quyền Admin điều khiển bot (bên cạnh Owner và quyền Administrator).
 - `AUTO_CHAT_COOLDOWN_SECONDS`: Giãn cách tối thiểu giữa các lần kích hoạt auto-chat của 1 người dùng (mặc định: `3` giây).
-- `CHANNEL_HISTORY_LIMIT`: Số tin nhắn gần nhất Auto-Chat/mention và `/chat` đọc để tạo ngữ cảnh (mặc định: `5`, đặt `0` để tắt).
+- `CHANNEL_HISTORY_LIMIT`: Số tin nhắn gần nhất Auto-Chat/mention và `/chat` đọc để tạo ngữ cảnh (mặc định: `5`, tối đa `50`, đặt `0` để tắt). Chỉ lấy tin của đúng kênh đang chat và đứng trước tin nhắn/lệnh hiện tại; tin đã bị xóa hoặc sửa không còn nằm trong ngữ cảnh.
 - `CHAT_INCLUDE_CHANNEL_CONTEXT`: Cho phép `/chat` gửi lịch sử kênh (có thể chứa tin nhắn của thành viên khác) tới AI provider; mặc định `true`. Đặt `false` nếu muốn `/chat` chỉ dùng lịch sử riêng của người gọi.
 - `STATUS_TYPE` & `STATUS_TEXT`: Trạng thái hoạt động hiển thị của bot (ví dụ: `playing`, `Where Winds Meet`).
 
 ### Cơ sở dữ liệu
 - `DB_PATH`: Đường dẫn file SQLite (mặc định: `conversations.db`).
 - `HISTORY_RETENTION_DAYS`: Tự động xóa lịch sử hội thoại sau N ngày (mặc định: `30`, `0` = giữ mãi).
+- `MAX_HISTORY_TURNS`: Số lượt hỏi-đáp tối đa nhớ cho mỗi người dùng (mặc định: `10`, tối đa `50`).
+- `MAX_HISTORY_CHARS`: Tổng số ký tự tối đa của lịch sử mỗi người dùng, vừa lưu DB vừa gửi cho AI (mặc định: `24000`, `0` = không giới hạn). Vượt quá thì lượt cũ nhất bị bỏ trước, lượt gần nhất luôn được giữ.
+
+Lịch sử đọc từ DB luôn được làm sạch trước khi dùng (bỏ mục sai vai trò/rỗng, đảm bảo xen kẽ user/model và bắt đầu bằng `user`) để dữ liệu hỏng không làm Gemini từ chối request. Khi bot bị đuổi/rời một server, lịch sử hội thoại và cấu hình auto-chat của server đó bị xóa; khi một kênh bị xóa, kênh đó cũng được gỡ khỏi danh sách auto-chat.
 
 > [!TIP]
 > Bạn có thể tùy chỉnh tính cách, phong cách xưng hô và chỉ dẫn hệ thống của bot bằng cách chỉnh sửa trực tiếp nội dung file [`prompt.txt`](prompt.txt).
@@ -154,6 +158,9 @@ Lệnh `/botinfo` cung cấp giao diện quản trị trực quan với các th�
 .
 ├── bot.py               # Xử lý sự kiện Discord, slash commands, quản lý state và gọi Gemini API
 ├── config.py            # Nạp và chuẩn hóa cấu hình từ biến môi trường (.env)
+├── channel_context.py   # Cache tin nhắn theo kênh và dựng ngữ cảnh (đúng kênh, đúng thời điểm)
+├── botinfo.py           # Bảng điều khiển /botinfo và giao diện Auto-Chat
+├── prompt_security.py   # Ranh giới tin cậy: dữ liệu Discord luôn là dữ liệu, không phải chỉ thị
 ├── literouter.py        # Client Literouter (OpenAI-compatible) + danh sách model tự cập nhật/cache
 ├── db.py                # Wrapper SQLite async (WAL mode, migrations, CRUD lịch sử)
 ├── utils.py             # Các hàm tiện ích: cắt tin nhắn, lọc tin trivial, tính dung lượng, parse giờ
@@ -164,7 +171,8 @@ Lệnh `/botinfo` cung cấp giao diện quản trị trực quan với các th�
 └── tests/               # Bộ unit test toàn diện
     ├── __init__.py
     ├── test_core.py     # Test suite: utils, database, channel context và retry logic Gemini
-    └── test_providers.py # Test fallback Gemini, client Literouter, cache danh sách model
+    ├── test_providers.py # Test fallback Gemini, client Literouter, cache danh sách model
+    └── test_data_integrity.py # Test SQLite, lịch sử hội thoại, cache ngữ cảnh kênh, giới hạn cấu hình
 ```
 
 ---
@@ -174,14 +182,15 @@ Lệnh `/botinfo` cung cấp giao diện quản trị trực quan với các th�
 Dự án đi kèm bộ kiểm thử toàn diện kiểm tra tính đúng đắn của logic xử lý chuỗi, cơ sở dữ liệu SQLite đa luồng và các trường hợp lỗi API (mock):
 
 ```bash
-# Chạy toàn bộ test suite
-python -m unittest tests/test_core.py -v
+# Chạy toàn bộ test suite (giống GitHub Actions)
+python -m unittest discover -s tests -v
 ```
 
 **Các nhóm kiểm thử chính:**
 - `UtilsTests`: Kiểm tra giới hạn và cách chia đoạn văn bản (`split_message`).
 - `DatabaseTests`: Kiểm tra phân tách dữ liệu theo Guild/User, transaction an toàn, tự động dọn dẹp (purge), migration và bảo toàn dữ liệu hiện có.
 - `ChannelContextTests`: Kiểm tra định dạng ngữ cảnh các tin nhắn gần nhất và tin nhắn trích dẫn.
+- `tests/test_data_integrity.py`: Quyền file SQLite (kể cả DB cũ), transaction/rollback, truy cập đồng thời, làm sạch và giới hạn lịch sử, cache ngữ cảnh đúng kênh/đúng thời điểm, vô hiệu hóa cache khi tin bị xóa/sửa và dọn dữ liệu khi bot rời server.
 - `AskGeminiRetryTests`: Giả lập các phản hồi lỗi từ Google Gemini (429 Rate Limit, 5xx Server Error, Timeout, Client Error) để đảm bảo bot retry và phản hồi chính xác.
 
 ---
@@ -190,7 +199,7 @@ python -m unittest tests/test_core.py -v
 
 - **Bảo mật bí mật:** File `.env` và các tệp dữ liệu SQLite (`*.db`, `*.db-wal`) đã được cấu hình trong `.gitignore` để không bao giờ bị lộ lên Git repository.
 - **Tối ưu bộ nhớ cache:** Áp dụng LRU có TTL 5 phút cho lịch sử chat; dữ liệu cũ được nạp lại từ SQLite thay vì giữ vô thời hạn trong RAM.
-- **Quyền riêng tư dữ liệu:** `/chat` đọc tối đa 5 tin nhắn gần nhất trong kênh theo mặc định (có thể tắt bằng `CHAT_INCLUDE_CHANNEL_CONTEXT=false`); retention tự động xóa lịch sử sau 30 ngày, SQLite bật `secure_delete`, giới hạn quyền file DB ở `0600` trên hệ thống POSIX và checkpoint WAL sau thao tác xóa.
+- **Quyền riêng tư dữ liệu:** `/chat` đọc tối đa 5 tin nhắn gần nhất trong kênh theo mặc định (có thể tắt bằng `CHAT_INCLUDE_CHANNEL_CONTEXT=false`); retention tự động xóa lịch sử sau 30 ngày, SQLite bật `secure_delete`, giới hạn quyền file DB cùng file phụ `-wal`/`-shm` ở `0600` trên hệ thống POSIX (kể cả DB đã tồn tại từ phiên bản cũ) và checkpoint WAL sau thao tác xóa.
 - **Xử lý bất đồng bộ chuẩn mực:** Mọi thao tác I/O với database và filesystem đều được đưa vào thread pool (`asyncio.to_thread`), tránh block event loop chính của Discord.
 
 ---

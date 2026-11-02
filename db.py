@@ -41,9 +41,28 @@ class Database:
         self._lock = threading.Lock()
 
     # ---------- nội bộ ----------
+    def _secure_files(self) -> None:
+        """Giới hạn quyền DB và file phụ WAL/SHM về 0600 (chứa nội dung hội thoại).
+
+        SQLite tạo -wal/-shm với quyền của file DB chính tại thời điểm tạo, nên với DB đã tồn
+        tại từ bản cũ (0644) phải chmod file chính TRƯỚC khi mở kết nối, rồi chmod lại các file
+        phụ còn sót sau khi init.
+        """
+        if os.name != "posix" or self.path == ":memory:":
+            return
+        for suffix in ("", "-wal", "-shm"):
+            target = self.path + suffix
+            try:
+                if os.path.isfile(target) and (os.stat(target).st_mode & 0o077):
+                    os.chmod(target, 0o600)
+            except OSError as e:
+                log.warning("Không thể giới hạn quyền truy cập %s (%s)", suffix or "file DB", type(e).__name__)
+
     def _init_sync(self) -> None:
-        parent = os.path.dirname(os.path.abspath(self.path))
-        os.makedirs(parent, exist_ok=True)
+        if self.path != ":memory:":
+            parent = os.path.dirname(os.path.abspath(self.path))
+            os.makedirs(parent, mode=0o700, exist_ok=True)
+        self._secure_files()  # DB cũ: chmod trước để -wal/-shm tạo mới thừa kế quyền 0600
         # WAL/SHM có thể chứa nội dung hội thoại. Dùng umask riêng lúc tạo
         # database để các file phụ cũng không bị mở quyền theo umask hệ thống.
         previous_umask = os.umask(0o077) if os.name == "posix" else None
@@ -60,11 +79,6 @@ class Database:
         conn.execute("PRAGMA wal_autocheckpoint=1000")
         conn.execute("PRAGMA journal_size_limit=16777216")
         conn.executescript(SCHEMA)
-        if self.path != ":memory:" and os.path.isfile(self.path):
-            try:
-                os.chmod(self.path, 0o600)
-            except OSError as e:
-                log.warning("Không thể giới hạn quyền truy cập file DB (%s)", type(e).__name__)
         # Dọn bảng Reminder cũ nếu DB được nâng cấp từ phiên bản trước.
         # Các bảng dữ liệu khác được giữ nguyên.
         conn.execute("DROP TABLE IF EXISTS reminders")
@@ -72,6 +86,7 @@ class Database:
         conn.execute("DROP TABLE IF EXISTS conversations")
         conn.commit()
         self._conn = conn
+        self._secure_files()  # file -wal/-shm có thể vừa được tạo/còn sót từ lần chạy trước
 
     def _run_sync(self, sql: str, params: tuple, mode: str):
         with self._lock:
@@ -91,8 +106,24 @@ class Database:
                 self._conn.rollback()
                 raise
 
+    def _run_many_sync(self, statements: list[tuple[str, tuple]]) -> list[int]:
+        """Chạy nhiều câu lệnh ghi trong MỘT transaction: hoặc tất cả được commit, hoặc không gì cả."""
+        with self._lock:
+            if self._conn is None:
+                raise RuntimeError("Database chưa được init()")
+            try:
+                counts = [self._conn.execute(sql, params).rowcount for sql, params in statements]
+                self._conn.commit()
+                return counts
+            except Exception:
+                self._conn.rollback()
+                raise
+
     async def _q(self, sql: str, params: tuple = (), mode: str = "exec"):
         return await asyncio.to_thread(self._run_sync, sql, params, mode)
+
+    async def _tx(self, statements: list[tuple[str, tuple]]) -> list[int]:
+        return await asyncio.to_thread(self._run_many_sync, statements)
 
     async def init(self) -> None:
         await asyncio.to_thread(self._init_sync)
@@ -174,6 +205,21 @@ class Database:
         if rowcount:
             await self._checkpoint()
         return rowcount
+
+    async def delete_guild_data(self, guild_id: int) -> tuple[int, int]:
+        """Xóa lịch sử hội thoại và kênh auto-chat của một server (khi bot bị đuổi/rời server).
+
+        Trả về (số lịch sử đã xóa, số kênh auto-chat đã xóa). Hai thao tác nằm trong cùng một transaction.
+        """
+        history_rows, channel_rows = await self._tx(
+            [
+                ("DELETE FROM chat_history WHERE guild_id = ?", (guild_id,)),
+                ("DELETE FROM auto_chat_channels WHERE guild_id = ?", (guild_id,)),
+            ]
+        )
+        if history_rows or channel_rows:
+            await self._checkpoint()
+        return history_rows, channel_rows
 
     async def count_history(self) -> int:
         row = await self._q("SELECT COUNT(*) FROM chat_history", mode="one")

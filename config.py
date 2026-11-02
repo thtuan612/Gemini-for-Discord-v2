@@ -106,9 +106,14 @@ AI_PROVIDER_ORDER = [p for p in dict.fromkeys(x.lower() for x in _csv("AI_PROVID
 AI_PROVIDER_ORDER += [p for p in _known_providers if p not in AI_PROVIDER_ORDER]
 
 # --- Hội thoại ---
-MAX_HISTORY_TURNS = _int("MAX_HISTORY_TURNS", 10)
+# Giá trị âm / quá lớn được kéo về khoảng hợp lệ: deque(maxlen<0) sẽ làm mọi tin nhắn bị lỗi,
+# còn giá trị quá lớn làm prompt và DB phình to.
+MAX_HISTORY_TURNS = min(max(0, _int("MAX_HISTORY_TURNS", 10)), 50)
+# Tổng số ký tự tối đa của lịch sử hội thoại mỗi người dùng (lưu DB và gửi cho AI). 0 = không giới hạn.
+MAX_HISTORY_CHARS = max(0, _int("MAX_HISTORY_CHARS", 24000))
 HISTORY_RETENTION_DAYS = _int("HISTORY_RETENTION_DAYS", 30)  # 0 = không tự xóa
-CHANNEL_HISTORY_LIMIT = _int("CHANNEL_HISTORY_LIMIT", 5)  # số tin nhắn kênh gần nhất đọc để hiểu context (0 = tắt)
+# Số tin nhắn kênh gần nhất đọc để hiểu context (0 = tắt, tối đa 50)
+CHANNEL_HISTORY_LIMIT = min(max(0, _int("CHANNEL_HISTORY_LIMIT", 5)), 50)
 CHAT_INCLUDE_CHANNEL_CONTEXT = _bool("CHAT_INCLUDE_CHANNEL_CONTEXT", True)  # /chat mặc định đọc 5 tin nhắn gần nhất trong kênh
 MAX_REPLY_CHARS = 1900
 

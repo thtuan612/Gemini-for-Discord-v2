@@ -2,12 +2,19 @@
 from __future__ import annotations
 
 from collections import OrderedDict, deque
+from typing import Iterable
 
 import discord
 
 import config
 
 REFERENCE_UNSET = object()
+
+
+def _message_id(message: object) -> int | None:
+    """ID dạng số của tin nhắn, hoặc None nếu không có (snowflake tăng dần theo thời gian)."""
+    value = getattr(message, "id", None)
+    return value if isinstance(value, int) else None
 
 
 class ChannelContext:
@@ -21,6 +28,12 @@ class ChannelContext:
         self._messages: OrderedDict[int, deque[discord.Message]] = OrderedDict()
 
     def record_message(self, message: discord.Message | None) -> None:
+        """Ghi tin nhắn vào cache của đúng kênh.
+
+        Cache luôn được giữ theo thứ tự id tăng dần (id snowflake tăng theo thời gian) và không
+        trùng lặp: ghi lại cùng một tin sẽ thay bản cũ; tin cũ hơn (vd. nạp bù từ lịch sử Discord)
+        được chèn đúng vị trí thay vì nối vào cuối.
+        """
         if message is None or not getattr(message, "channel", None) or not hasattr(message.channel, "id"):
             return
         channel_id = message.channel.id
@@ -33,21 +46,73 @@ class ChannelContext:
         else:
             self._messages.move_to_end(channel_id)
 
-        if queue and getattr(queue[-1], "id", None) == getattr(message, "id", None):
-            return
-        queue.append(message)
+        new_id = _message_id(message)
+        items = list(queue)
+        if new_id is not None:
+            for index, existing in enumerate(items):
+                if _message_id(existing) == new_id:
+                    items[index] = message  # cùng một tin: giữ bản mới nhất, không nhân đôi
+                    break
+            else:
+                items.append(message)
+        else:
+            if queue and queue[-1] is message:
+                return
+            items.append(message)
+
+        # Tin có id xếp theo id; tin không có id giữ nguyên thứ tự đến, đứng sau cùng.
+        known = sorted((m for m in items if _message_id(m) is not None), key=_message_id)
+        unknown = [m for m in items if _message_id(m) is None]
+        ordered = known + unknown
+        queue.clear()
+        queue.extend(ordered[-queue.maxlen:])
+
+    def remove_messages(self, channel_id: int, message_ids: Iterable[int]) -> int:
+        """Xóa tin nhắn khỏi cache (tin bị xóa/sửa không được tiếp tục đưa vào ngữ cảnh AI)."""
+        queue = self._messages.get(channel_id)
+        if not queue:
+            return 0
+        targets = set(message_ids)
+        kept = [m for m in queue if _message_id(m) not in targets]
+        removed = len(queue) - len(kept)
+        if removed:
+            queue.clear()
+            queue.extend(kept)
+        return removed
+
+    def forget_channel(self, channel_id: int) -> None:
+        self._messages.pop(channel_id, None)
+
+    def forget_guild(self, guild_id: int) -> int:
+        """Bỏ toàn bộ cache của các kênh thuộc một server. Trả về số kênh đã bỏ."""
+        stale = [
+            channel_id
+            for channel_id, queue in self._messages.items()
+            if any(getattr(getattr(m, "guild", None), "id", None) == guild_id for m in queue)
+        ]
+        for channel_id in stale:
+            del self._messages[channel_id]
+        return len(stale)
 
     async def get_reference(self, message: discord.Message) -> discord.Message | None:
         if message.reference is None:
             return None
+        channel_id = getattr(message.channel, "id", None)
+        # Chỉ chấp nhận tin tham chiếu nằm CÙNG kênh: tin được chuyển tiếp/crosspost từ kênh khác
+        # không được kéo nội dung kênh đó vào ngữ cảnh.
+        reference_channel_id = getattr(message.reference, "channel_id", None)
+        if isinstance(reference_channel_id, int) and isinstance(channel_id, int) and reference_channel_id != channel_id:
+            return None
         reference = message.reference.resolved
         if isinstance(reference, discord.Message):
+            resolved_channel_id = getattr(getattr(reference, "channel", None), "id", None)
+            if isinstance(resolved_channel_id, int) and isinstance(channel_id, int) and resolved_channel_id != channel_id:
+                return None
             return reference
         reference_id = message.reference.message_id
         if not reference_id:
             return None
 
-        channel_id = getattr(message.channel, "id", None)
         if channel_id and channel_id in self._messages:
             for cached in self._messages[channel_id]:
                 if getattr(cached, "id", None) == reference_id:
@@ -99,17 +164,26 @@ class ChannelContext:
         current_message: discord.Message | None = None,
         ref_msg: discord.Message | None = None,
         limit: int = config.CHANNEL_HISTORY_LIMIT,
+        before_id: int | None = None,
     ) -> str:
+        """Dựng ngữ cảnh từ các tin nhắn gần nhất của ĐÚNG kênh `channel`.
+
+        Chỉ lấy tin có id nhỏ hơn mốc thời điểm: id của `current_message`, hoặc `before_id`
+        (vd. id của interaction với slash command, vốn không có tin nhắn). Nhờ vậy tin đến sau
+        không lọt vào ngữ cảnh của yêu cầu đến trước.
+        """
         if channel is None or limit <= 0:
             return ""
 
         messages: list[discord.Message] = []
         channel_id = getattr(channel, "id", None)
         cached = list(self._messages.get(channel_id, ())) if channel_id else []
-        current_id = getattr(current_message, "id", None)
+        current_id = _message_id(current_message)
+        if current_id is None and isinstance(before_id, int):
+            current_id = before_id
 
         def is_before_current(message: discord.Message) -> bool:
-            message_id = getattr(message, "id", None)
+            message_id = _message_id(message)
             if current_id is None or message_id is None:
                 return message is not current_message
             # Discord snowflake IDs preserve chronological order.
@@ -129,8 +203,9 @@ class ChannelContext:
             message for message in cached
             if is_before_current(message) and has_content(message)
         ]
-        if current_id is not None:
-            cached.sort(key=lambda item: getattr(item, "id", 0))
+        # Luôn xếp theo id: thứ tự đến của event không đảm bảo thứ tự thời gian
+        # (vd. tin bot trả lời được ghi sau khi đã có tin mới của người khác).
+        cached.sort(key=lambda item: _message_id(item) or 0)
         messages = cached[-limit:]
 
         # Khi bot vừa khởi động, cache thường chỉ có tin nhắn hiện tại hoặc vài tin.
@@ -139,11 +214,13 @@ class ChannelContext:
         if missing > 0 and hasattr(channel, "history"):
             try:
                 before = messages[0] if messages else current_message
+                if before is None and current_id is not None:
+                    before = discord.Object(id=current_id)  # slash command: lấy tin trước thời điểm gọi lệnh
                 older: list[discord.Message] = []
                 async for message in channel.history(limit=missing, before=before):
                     if not is_before_current(message) or not has_content(message):
                         continue
-                    if any(getattr(item, "id", None) == getattr(message, "id", None) for item in messages):
+                    if any(_message_id(item) == _message_id(message) for item in messages):
                         continue
                     older.append(message)
                 older.reverse()  # Discord trả lịch sử từ mới đến cũ.

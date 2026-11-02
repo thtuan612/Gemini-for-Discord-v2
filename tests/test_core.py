@@ -177,8 +177,14 @@ from unittest.mock import AsyncMock, MagicMock
 
 import discord
 
-# Mock google.genai nếu môi trường test chưa cài
-if "google" not in sys.modules:
+# Mock google.genai CHỈ khi môi trường test thực sự chưa cài. Điều kiện cũ ("google" not in
+# sys.modules) luôn đúng khi file này được import đầu tiên nên mock cả khi SDK đã cài, khiến các
+# test khác (cùng một tiến trình) dùng types.Part/Content giả thay vì SDK thật.
+try:
+    import google.genai  # noqa: F401
+    import google.genai.errors  # noqa: F401
+    import google.genai.types  # noqa: F401
+except ImportError:
     sys.modules["google"] = MagicMock()
     sys.modules["google.genai"] = MagicMock()
     sys.modules["google.genai.types"] = MagicMock()
